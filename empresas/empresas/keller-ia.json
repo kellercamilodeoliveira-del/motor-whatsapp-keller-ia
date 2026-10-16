@@ -1,0 +1,27 @@
+{
+  "nome_empresa": "Keller IA",
+  "segmento": "Serviços de automação e inteligência artificial para empresas",
+  "horario_funcionamento": "Segunda a sexta, das 8h às 18h (fora desse horário, a resposta pode demorar um pouco mais)",
+  "endereco": "Atendimento remoto, para empresas de Marília, Garça, Ourinhos e região",
+  "servicos": [
+    {
+      "nome": "Dashboard e BI (painel de indicadores pra gestão)",
+      "preco": "R$1.500 a R$3.000, dependendo da complexidade"
+    },
+    {
+      "nome": "Automação de processos (planilhas, tarefas repetitivas, integrações)",
+      "preco": "R$1.200 a R$3.500, dependendo do processo"
+    },
+    {
+      "nome": "Chatbot com IA no WhatsApp (pra responder clientes automaticamente)",
+      "preco": "R$2.000 a R$5.000"
+    },
+    {
+      "nome": "Agente de IA interno (pra otimizar processos da empresa)",
+      "preco": "Sob consulta, de acordo com o escopo do projeto"
+    }
+  ],
+  "forma_agendamento": "Confirma o interesse por aqui no WhatsApp, e o Keller entra em contato pra marcar uma conversa (ligação ou vídeo-chamada) pra entender a necessidade da empresa e montar uma proposta.",
+  "mensagem_boas_vindas": "Oi! Aqui é da Keller IA 🤖 Ajudamos empresas a automatizar processos e criar sistemas com inteligência artificial — painéis, automações, chatbots e agentes de IA. Me conta rapidinho: qual é o principal problema ou processo que você gostaria de resolver na sua empresa?",
+  "quando_chamar_humano": "Sempre que o cliente pedir preço fechado, quiser fazer uma proposta, perguntar algo técnico mais específico que não está nessa lista, ou demonstrar urgência/insatisfação. Nesses casos, responder que o Keller vai assumir a conversa e dar o próximo retorno."
+}
