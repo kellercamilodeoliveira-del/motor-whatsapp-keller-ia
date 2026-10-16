@@ -29,3 +29,50 @@ function carregarEmpresa(numeroCliente) {
   return JSON.parse(fs.readFileSync(path.join(EMPRESAS_DIR, "exemplo.json"), "utf-8"));
 }
 
+function montarPrompt(empresa) {
+  return `Você é a secretária virtual de "${empresa.nome_empresa}", um(a) ${empresa.segmento}.
+
+REGRAS IMPORTANTES:
+- Responda SOMENTE com base nas informações abaixo. NUNCA invente preço, horário, serviço ou qualquer dado que não esteja aqui.
+- Se perguntarem algo que você não tem informação pra responder, diga educadamente que vai confirmar com a equipe e que alguém vai retornar.
+- Seja breve, simpática e direta — mensagens curtas, como se estivesse no WhatsApp de verdade.
+- Nunca se apresente como "inteligência artificial" a menos que perguntem diretamente; aí seja honesta.
+
+DADOS DA EMPRESA:
+- Endereço: ${empresa.endereco}
+- Horário de funcionamento: ${empresa.horario_funcionamento}
+- Serviços e preços: ${empresa.servicos.map(s => `${s.nome} (${s.preco})`).join(", ")}
+- Como agendar: ${empresa.forma_agendamento}
+- Quando chamar um humano: ${empresa.quando_chamar_humano}
+`;
+}
+
+async function responderComIA(empresa, numeroConversa, textoRecebido) {
+  const historicoConversa = historico.get(numeroConversa) || [];
+
+  const mensagens = [
+    { role: "system", content: montarPrompt(empresa) },
+    ...historicoConversa,
+    { role: "user", content: textoRecebido },
+  ];
+
+  const resposta = await groq.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    messages: mensagens,
+    temperature: 0.4,
+    max_tokens: 300,
+  });
+
+  const textoResposta = resposta.choices[0]?.message?.content?.trim()
+    || "Desculpa, deu um probleminha aqui. Já já alguém da equipe te responde!";
+
+  const novoHistorico = [
+    ...historicoConversa,
+    { role: "user", content: textoRecebido },
+    { role: "assistant", content: textoResposta },
+  ].slice(-HISTORICO_MAX_MENSAGENS);
+  historico.set(numeroConversa, novoHistorico);
+
+  return textoResposta;
+}
+
