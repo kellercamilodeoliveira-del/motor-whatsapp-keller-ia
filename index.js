@@ -153,6 +153,7 @@ async function iniciar() {
 
 const app = express();
 app.get("/", (req, res) => res.send("Motor WhatsApp Keller IA está rodando ✅"));
-app.listen(PORT, () => console.log(`Servidor HTTP ouvindo na porta ${PORT}`));
-
-iniciar().catch((err) => console.error("Erro ao iniciar:", err));
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor HTTP ouvindo na porta ${PORT}`);
+  iniciar().catch((err) => console.error("Erro ao iniciar:", err));
+});
