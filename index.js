@@ -75,4 +75,80 @@ async function responderComIA(empresa, numeroConversa, textoRecebido) {
 
   return textoResposta;
 }
+async function iniciar() {
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { version } = await fetchLatestBaileysVersion();
+
+  const usarCodigoDePareamento = !!process.env.PHONE_NUMBER;
+
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    logger: pino({ level: "silent" }),
+    printQRInTerminal: false,
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  if (usarCodigoDePareamento && !state.creds.registered) {
+    setTimeout(async () => {
+      try {
+        const codigo = await sock.requestPairingCode(process.env.PHONE_NUMBER);
+        console.log("CODIGO DE PAREAMENTO:", codigo);
+      } catch (erro) {
+        console.error("Erro ao gerar codigo de pareamento:", erro);
+      }
+    }, 3000);
+  }
+
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr && !usarCodigoDePareamento) {
+      qrcode.generate(qr, { small: true });
+    }
+
+    if (connection === "close") {
+      const deveReconectar =
+        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log("Conexao caiu. Reconectar?", deveReconectar);
+      if (deveReconectar) iniciar();
+    } else if (connection === "open") {
+      console.log("Conectado ao WhatsApp!");
+    }
+  });
+
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+
+    for (const msg of messages) {
+      if (!msg.message || msg.key.fromMe) continue;
+
+      const numeroRemetente = msg.key.remoteJid;
+      const texto =
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        "";
+
+      if (!texto) continue;
+
+      const numeroEmpresa = sock.user?.id?.split(":")[0];
+      const empresa = carregarEmpresa(numeroEmpresa);
+
+      try {
+        const resposta = await responderComIA(empresa, numeroRemetente, texto);
+        await sock.sendMessage(numeroRemetente, { text: resposta });
+      } catch (erro) {
+        console.error("Erro ao responder:", erro);
+      }
+    }
+  });
+}
+
+const app = express();
+app.get("/", (req, res) => res.send("Motor WhatsApp Keller IA esta rodando"));
+app.listen(PORT, () => console.log(`Servidor HTTP ouvindo na porta ${PORT}`));
+
+iniciar().catch((err) => console.error("Erro ao iniciar:", err));
+
 
