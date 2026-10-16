@@ -1,0 +1,21 @@
+{
+  "name": "motor-whatsapp-keller-ia",
+  "version": "1.0.0",
+  "description": "Motor de secretaria virtual de IA para WhatsApp - responde clientes com base nos dados cadastrados da empresa.",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "qrcode-terminal": "^0.12.0",
+    "express": "^4.19.2",
+    "groq-sdk": "^0.5.0",
+    "dotenv": "^16.4.5",
+    "pino": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
