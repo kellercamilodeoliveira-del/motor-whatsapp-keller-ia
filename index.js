@@ -120,4 +120,141 @@ function paraJid(numero) {
   let digitos = String(numero).replace(/\D/g, "");
   if (digitos.length <= 11) digitos = "55" + digitos;
   return `${digitos}@s.whatsapp.net`;
+}async function iniciar() {
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+  let version;
+  try {
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch (erro) {
+    console.error("Não consegui checar a versão mais recente do WhatsApp, seguindo com a padrão:", erro.message);
+    version = undefined;
+  }
+
+  sock = makeWASocket({
+    version,
+    auth: state,
+    logger: pino({ level: "silent" }),
+    printQRInTerminal: false,
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      statusConexao = "aguardando_qr";
+      try {
+        ultimoQrDataUrl = await QRCode.toDataURL(qr);
+        console.log("📱 Novo QR code gerado — abre a página inicial do serviço pra escanear.");
+      } catch (erro) {
+        console.error("Erro ao gerar imagem do QR code:", erro);
+      }
+    }
+
+    if (connection === "close") {
+      statusConexao = "caiu";
+      const deveReconectar =
+        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log("Conexão com o WhatsApp caiu. Reconectar automaticamente?", deveReconectar);
+      if (deveReconectar) {
+        setTimeout(() => iniciar().catch((e) => console.error("Erro ao reconectar:", e)), 2000);
+      }
+    } else if (connection === "open") {
+      statusConexao = "conectado";
+      ultimoQrDataUrl = null;
+      console.log("✅ Conectado ao WhatsApp!");
+    }
+  });
+
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify" || !groq) return;
+
+    for (const msg of messages) {
+      if (!msg.message || msg.key.fromMe) continue;
+
+      const numeroRemetente = msg.key.remoteJid;
+      const texto =
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        "";
+      if (!texto) continue;
+
+      const numeroEmpresa = sock.user?.id?.split(":")[0];
+      const empresa = carregarEmpresa(numeroEmpresa);
+      if (!empresa) continue;
+
+      console.log(`📩 Mensagem de ${numeroRemetente}: ${texto}`);
+      try {
+        const resposta = await responderComIA(empresa, numeroRemetente, texto);
+        await sock.sendMessage(numeroRemetente, { text: resposta });
+        console.log(`📤 Respondido automaticamente: ${resposta}`);
+      } catch (erro) {
+        console.error("Erro ao responder automaticamente:", erro);
+      }
+    }
+  });
 }
+
+const app = express();
+app.use(express.json());
+
+app.get("/", (req, res) => {
+  if (statusConexao === "conectado") {
+    res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+        <h1>✅ Motor WhatsApp Keller IA conectado</h1>
+        <p>Pronto pra enviar mensagens automaticamente.</p>
+      </body></html>
+    `);
+  } else if (ultimoQrDataUrl) {
+    res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:40px">
+        <h1>📱 Escaneie pra conectar seu WhatsApp</h1>
+        <p>No celular: WhatsApp → Configurações → Aparelhos conectados → Conectar um aparelho</p>
+        <img src="${ultimoQrDataUrl}" style="width:300px;height:300px" />
+        <p style="color:#888">A página atualiza sozinha a cada 5 segundos.</p>
+        <script>setTimeout(() => location.reload(), 5000);</script>
+      </body></html>
+    `);
+  } else {
+    res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+        <h1>⏳ Gerando QR code...</h1>
+        <p>Atualiza a página em alguns segundos.</p>
+        <script>setTimeout(() => location.reload(), 4000);</script>
+      </body></html>
+    `);
+  }
+});
+
+app.get("/status", (req, res) => {
+  res.json({ status: statusConexao });
+});
+
+app.post("/enviar", async (req, res) => {
+  if (API_KEY && req.headers["x-api-key"] !== API_KEY) {
+    return res.status(401).json({ erro: "Chave de API inválida." });
+  }
+  if (statusConexao !== "conectado" || !sock) {
+    return res.status(503).json({ erro: "WhatsApp ainda não está conectado. Escaneie o QR code na página inicial." });
+  }
+
+  const { numero, mensagem } = req.body || {};
+  if (!numero || !mensagem) {
+    return res.status(400).json({ erro: "Informe 'numero' e 'mensagem' no corpo da requisição." });
+  }
+
+  try {
+    await sock.sendMessage(paraJid(numero), { text: mensagem });
+    res.json({ sucesso: true });
+  } catch (erro) {
+    console.error("Erro ao enviar mensagem via /enviar:", erro);
+    res.status(500).json({ erro: "Falha ao enviar mensagem.", detalhe: erro.message });
+  }
+});
+
+app.listen(PORT, () => console.log(`Servidor HTTP ouvindo na porta ${PORT}`));
+
+iniciar().catch((err) => console.error("Erro ao iniciar conexão com o WhatsApp:", err));
