@@ -1,32 +1,75 @@
+/**
+ * Motor de WhatsApp — Keller IA
+ *
+ * O que isso faz:
+ *  - Conecta num número de WhatsApp (o SEU número, escaneando um QR Code na página inicial)
+ *  - Expõe um endpoint POST /enviar que o Painel de Leads chama pra mandar mensagem
+ *    automaticamente pro cliente, sem precisar abrir o WhatsApp manualmente
+ *  - (Opcional) Se a variável GROQ_API_KEY estiver configurada, também responde
+ *    sozinho quem mandar mensagem, usando os dados da empresa em /empresas
+ *
+ * Importante: usa a biblioteca Baileys, que fala com o WhatsApp de forma NÃO oficial
+ * (não é a API paga do Meta). É de graça, mas carrega algum risco de o número ser
+ * sinalizado se o volume de mensagens ficar muito alto ou repetitivo.
+ *
+ * ATENÇÃO SOBRE O PLANO GRATUITO DO RENDER:
+ * O disco é apagado toda vez que o serviço reinicia (o que acontece depois de um
+ * tempo sem uso, ou a cada novo deploy). Isso significa que a sessão do WhatsApp
+ * (o "login") pode precisar ser refeita de vez em quando — vai aparecer um novo QR
+ * code na página inicial quando isso acontecer. Se isso incomodar, o plano pago do
+ * Render com disco persistente resolve de vez (fica sempre conectado).
+ */
+
 require("dotenv").config();
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const pino = require("pino");
-const Groq = require("groq-sdk");
+const QRCode = require("qrcode");
 const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
 } = require("@whiskeysockets/baileys");
-const qrcode = require("qrcode-terminal");
 
 const EMPRESAS_DIR = path.join(__dirname, "empresas");
 const AUTH_DIR = path.join(__dirname, "auth_info");
 const PORT = process.env.PORT || 3000;
+const API_KEY = process.env.API_KEY || ""; // chave que o painel de leads usa pra autenticar o envio
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// IA opcional de auto-resposta — só ativa se a chave estiver configurada.
+let groq = null;
+if (process.env.GROQ_API_KEY) {
+  try {
+    const Groq = require("groq-sdk");
+    groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    console.log("🤖 Auto-resposta por IA ativada (GROQ_API_KEY encontrada).");
+  } catch (erro) {
+    console.error("Não consegui iniciar a IA de auto-resposta (seguindo sem ela):", erro.message);
+  }
+} else {
+  console.log("ℹ️  GROQ_API_KEY não configurada — auto-resposta por IA desativada (só envio manual via /enviar vai funcionar).");
+}
 
+// Memória de conversa por número (em RAM — reseta se o processo reiniciar).
 const historico = new Map();
 const HISTORICO_MAX_MENSAGENS = 10;
+
+let sock = null;
+let ultimoQrDataUrl = null;
+let statusConexao = "iniciando"; // iniciando | aguardando_qr | conectado | caiu
 
 function carregarEmpresa(numeroCliente) {
   const arquivo = path.join(EMPRESAS_DIR, `${numeroCliente}.json`);
   if (fs.existsSync(arquivo)) {
     return JSON.parse(fs.readFileSync(arquivo, "utf-8"));
   }
-  return JSON.parse(fs.readFileSync(path.join(EMPRESAS_DIR, "exemplo.json"), "utf-8"));
+  const exemplo = path.join(EMPRESAS_DIR, "exemplo.json");
+  if (fs.existsSync(exemplo)) {
+    return JSON.parse(fs.readFileSync(exemplo, "utf-8"));
+  }
+  return null;
 }
 
 function montarPrompt(empresa) {
@@ -41,7 +84,7 @@ REGRAS IMPORTANTES:
 DADOS DA EMPRESA:
 - Endereço: ${empresa.endereco}
 - Horário de funcionamento: ${empresa.horario_funcionamento}
-- Serviços e preços: ${empresa.servicos.map(s => `${s.nome} (${s.preco})`).join(", ")}
+- Serviços e preços: ${(empresa.servicos || []).map(s => `${s.nome} (${s.preco})`).join(", ")}
 - Como agendar: ${empresa.forma_agendamento}
 - Quando chamar um humano: ${empresa.quando_chamar_humano}
 `;
@@ -49,7 +92,6 @@ DADOS DA EMPRESA:
 
 async function responderComIA(empresa, numeroConversa, textoRecebido) {
   const historicoConversa = historico.get(numeroConversa) || [];
-
   const mensagens = [
     { role: "system", content: montarPrompt(empresa) },
     ...historicoConversa,
@@ -76,84 +118,17 @@ async function responderComIA(empresa, numeroConversa, textoRecebido) {
   return textoResposta;
 }
 
-async function iniciar() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version } = await fetchLatestBaileysVersion();
-
-  const usarCodigoDePareamento = !!process.env.PHONE_NUMBER;
-
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    logger: pino({ level: "silent" }),
-    printQRInTerminal: false,
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-
-  if (usarCodigoDePareamento && !state.creds.registered) {
-    setTimeout(async () => {
-      try {
-        const codigo = await sock.requestPairingCode(process.env.PHONE_NUMBER);
-        console.log("\n📱 CÓDIGO DE PAREAMENTO:", codigo);
-        console.log("No WhatsApp: Configurações → Aparelhos conectados → Conectar um aparelho → Conectar com número de telefone, e digite esse código.\n");
-      } catch (erro) {
-        console.error("Erro ao gerar código de pareamento:", erro);
-      }
-    }, 3000);
-  }
-
-  sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr && !usarCodigoDePareamento) {
-      console.log("\n📱 Escaneie este QR Code no WhatsApp (Aparelhos conectados):\n");
-      qrcode.generate(qr, { small: true });
-    }
-
-    if (connection === "close") {
-      const deveReconectar =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log("Conexão caiu. Reconectar?", deveReconectar);
-      if (deveReconectar) iniciar();
-    } else if (connection === "open") {
-      console.log("✅ Conectado ao WhatsApp!");
-    }
-  });
-
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
-
-    for (const msg of messages) {
-      if (!msg.message || msg.key.fromMe) continue;
-
-      const numeroRemetente = msg.key.remoteJid;
-      const texto =
-        msg.message.conversation ||
-        msg.message.extendedTextMessage?.text ||
-        "";
-
-      if (!texto) continue;
-
-      const numeroEmpresa = sock.user?.id?.split(":")[0];
-      const empresa = carregarEmpresa(numeroEmpresa);
-
-      console.log(`📩 Mensagem de ${numeroRemetente}: ${texto}`);
-
-      try {
-        const resposta = await responderComIA(empresa, numeroRemetente, texto);
-        await sock.sendMessage(numeroRemetente, { text: resposta });
-        console.log(`📤 Respondido: ${resposta}`);
-      } catch (erro) {
-        console.error("Erro ao responder:", erro);
-      }
-    }
-  });
+// Transforma "5514988324456" ou "14988324456" no formato que o Baileys espera (JID).
+function paraJid(numero) {
+  let digitos = String(numero).replace(/\D/g, "");
+  if (digitos.length <= 11) digitos = "55" + digitos; // assume Brasil se vier sem DDI
+  return `${digitos}@s.whatsapp.net`;
 }
 
-const app = express();
-app.get("/", (req, res) => res.send("Motor WhatsApp Keller IA está rodando ✅"));
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor HTTP ouvindo na porta ${PORT}`);
-  iniciar().catch((err) => console.error("Erro ao iniciar:", err));
-});
+async function iniciar() {
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+  let version;
+  try {
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch (erro) {
