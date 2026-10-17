@@ -72,8 +72,22 @@ function carregarEmpresa(numeroCliente) {
   return null;
 }
 
+function dataHojeExtenso() {
+  const agora = new Date();
+  const formatado = agora.toLocaleDateString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
+  return formatado;
+}
+
+const TEM_AGENDA = (empresa) => !!(empresa && empresa.usa_agenda !== false);
+
 function montarPrompt(empresa) {
-  return `Você é a secretária virtual de "${empresa.nome_empresa}", um(a) ${empresa.segmento}.
+  let prompt = `Você é a secretária virtual de "${empresa.nome_empresa}", um(a) ${empresa.segmento}.
 
 REGRAS IMPORTANTES:
 - Responda SOMENTE com base nas informações abaixo. NUNCA invente preço, horário, serviço ou qualquer dado que não esteja aqui.
@@ -88,6 +102,35 @@ DADOS DA EMPRESA:
 - Como agendar: ${empresa.forma_agendamento}
 - Quando chamar um humano: ${empresa.quando_chamar_humano}
 `;
+
+  if (TEM_AGENDA(empresa)) {
+    prompt += `
+HOJE É: ${dataHojeExtenso()} (use isso pra calcular datas como "amanhã" ou "sexta-feira").
+
+AGENDAMENTO AUTOMÁTICO:
+Quando o cliente confirmar um horário com você (ele aceitou um dia, hora e serviço específicos),
+você deve ANOTAR esse agendamento automaticamente. Pra isso, no FINAL da sua mensagem de confirmação
+pro cliente, inclua uma linha extra, exatamente neste formato (o cliente nunca vê essa linha, ela é
+removida antes de enviar):
+[AGENDAMENTO]{"servico":"nome do serviço","data":"AAAA-MM-DD","hora":"HH:MM","cliente":"nome do cliente se ele disse, senão 'Cliente'"}[/AGENDAMENTO]
+Só inclua essa linha quando o horário estiver REALMENTE confirmado (dia, hora e serviço definidos),
+nunca enquanto ainda estiver negociando ou sugerindo horários.
+`;
+  }
+
+  return prompt;
+}
+
+function extrairAgendamento(texto) {
+  const match = texto.match(/\[AGENDAMENTO\]([\s\S]*?)\[\/AGENDAMENTO\]/);
+  if (!match) return { textoLimpo: texto.trim(), agendamento: null };
+  const textoLimpo = texto.replace(match[0], "").trim();
+  try {
+    const dados = JSON.parse(match[1]);
+    return { textoLimpo, agendamento: dados };
+  } catch {
+    return { textoLimpo, agendamento: null };
+  }
 }
 
 async function responderComIA(empresa, numeroConversa, textoRecebido) {
@@ -102,20 +145,22 @@ async function responderComIA(empresa, numeroConversa, textoRecebido) {
     model: "llama-3.3-70b-versatile",
     messages: mensagens,
     temperature: 0.4,
-    max_tokens: 300,
+    max_tokens: 350,
   });
 
-  const textoResposta = resposta.choices[0]?.message?.content?.trim()
+  const bruto = resposta.choices[0]?.message?.content?.trim()
     || "Desculpa, deu um probleminha aqui. Já já alguém da equipe te responde!";
+
+  const { textoLimpo, agendamento } = extrairAgendamento(bruto);
 
   const novoHistorico = [
     ...historicoConversa,
     { role: "user", content: textoRecebido },
-    { role: "assistant", content: textoResposta },
+    { role: "assistant", content: textoLimpo },
   ].slice(-HISTORICO_MAX_MENSAGENS);
   historico.set(numeroConversa, novoHistorico);
 
-  return textoResposta;
+  return { texto: textoLimpo, agendamento };
 }
 
 // Transforma "5514988324456" ou "14988324456" no formato que o Baileys espera (JID).
@@ -185,6 +230,17 @@ async function firestoreSetCampos(caminho, campos) {
     body: JSON.stringify({ fields }),
   });
   if (!resp.ok) throw new Error(`Firestore PATCH ${caminho} falhou: ${resp.status}`);
+}
+
+async function firestoreCriarDoc(colecao, campos) {
+  const fields = {};
+  for (const k in campos) fields[k] = jsParaFsValor(campos[k]);
+  const resp = await fetch(`${FIRESTORE_BASE}/${colecao}?key=${FIRESTORE_API_KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fields }),
+  });
+  if (!resp.ok) throw new Error(`Firestore POST ${colecao} falhou: ${resp.status}`);
 }
 
 // Mesma lógica de mensagem padrão usada no Painel de Leads (netlify-site/index.html).
@@ -308,9 +364,27 @@ async function iniciar() {
 
       console.log(`📩 Mensagem de ${numeroRemetente}: ${texto}`);
       try {
-        const resposta = await responderComIA(empresa, numeroRemetente, texto);
-        await sock.sendMessage(numeroRemetente, { text: resposta });
-        console.log(`📤 Respondido automaticamente: ${resposta}`);
+        const { texto: respostaTexto, agendamento } = await responderComIA(empresa, numeroRemetente, texto);
+        await sock.sendMessage(numeroRemetente, { text: respostaTexto });
+        console.log(`📤 Respondido automaticamente: ${respostaTexto}`);
+
+        if (agendamento) {
+          try {
+            await firestoreCriarDoc("agendamentos", {
+              empresaNumero: numeroEmpresa,
+              clienteNumero: String(numeroRemetente).split("@")[0],
+              cliente: agendamento.cliente || "Cliente",
+              servico: agendamento.servico || "",
+              data: agendamento.data || "",
+              hora: agendamento.hora || "",
+              status: "confirmado",
+              criadoEm: new Date().toISOString(),
+            });
+            console.log(`🗓️  Agendamento salvo: ${agendamento.servico} em ${agendamento.data} ${agendamento.hora}`);
+          } catch (erroAgenda) {
+            console.error("Erro ao salvar agendamento:", erroAgenda);
+          }
+        }
       } catch (erro) {
         console.error("Erro ao responder automaticamente:", erro);
       }
@@ -328,6 +402,7 @@ app.get("/", (req, res) => {
       <html><body style="font-family:sans-serif;text-align:center;padding:60px">
         <h1>✅ Motor WhatsApp Keller IA conectado</h1>
         <p>Pronto pra enviar mensagens automaticamente.</p>
+        <p><a href="/agenda" style="color:#1a7a3c;font-weight:600">📅 Ver agenda de horários marcados</a></p>
       </body></html>
     `);
   } else if (ultimoQrDataUrl) {
@@ -353,6 +428,51 @@ app.get("/", (req, res) => {
 
 app.get("/status", (req, res) => {
   res.json({ status: statusConexao });
+});
+
+// Página simples com os horários que a IA marcou sozinha, conversando no WhatsApp.
+app.get("/agenda", async (req, res) => {
+  try {
+    const numeroEmpresa = sock?.user?.id?.split(":")[0] || "";
+    const todos = await firestoreListarColecao("agendamentos");
+    const meus = todos
+      .filter((a) => a.empresaNumero === numeroEmpresa)
+      .sort((a, b) => `${a.data}${a.hora}`.localeCompare(`${b.data}${b.hora}`));
+
+    const hoje = new Date().toISOString().slice(0, 10);
+    const linhas = meus.map((a) => {
+      const passou = a.data < hoje;
+      return `<tr style="${passou ? "opacity:.45" : ""}">
+        <td>${a.data || "-"}</td>
+        <td>${a.hora || "-"}</td>
+        <td>${a.cliente || "-"}</td>
+        <td>${a.servico || "-"}</td>
+        <td><a href="https://wa.me/${a.clienteNumero}" target="_blank" style="color:#1a7a3c">abrir chat</a></td>
+      </tr>`;
+    }).join("");
+
+    res.send(`
+      <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+      <style>
+        body{font-family:sans-serif;max-width:720px;margin:30px auto;padding:0 16px;color:#222}
+        table{width:100%;border-collapse:collapse;margin-top:16px}
+        th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #e3e3e3;font-size:.92rem}
+        th{color:#666;font-weight:600;font-size:.8rem;text-transform:uppercase}
+        a.voltar{color:#666;text-decoration:none;font-size:.9rem}
+      </style></head>
+      <body>
+        <a class="voltar" href="/">← voltar</a>
+        <h1>📅 Agenda</h1>
+        <p style="color:#666">Horários marcados automaticamente pela IA nas conversas do WhatsApp. Os já passados aparecem apagados.</p>
+        ${meus.length === 0
+          ? '<p style="color:#888">Nenhum horário marcado ainda.</p>'
+          : `<table><tr><th>Data</th><th>Hora</th><th>Cliente</th><th>Serviço</th><th></th></tr>${linhas}</table>`}
+      </body></html>
+    `);
+  } catch (erro) {
+    console.error("Erro ao carregar agenda:", erro);
+    res.status(500).send("Não consegui carregar a agenda agora. Tenta de novo em instantes.");
+  }
 });
 
 // O Painel de Leads chama este endpoint pra mandar mensagem automaticamente.
