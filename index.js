@@ -36,9 +36,8 @@ const {
 const EMPRESAS_DIR = path.join(__dirname, "empresas");
 const AUTH_DIR = path.join(__dirname, "auth_info");
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.API_KEY || ""; // chave que o painel de leads usa pra autenticar o envio
+const API_KEY = process.env.API_KEY || "";
 
-// IA opcional de auto-resposta — só ativa se a chave estiver configurada.
 let groq = null;
 if (process.env.GROQ_API_KEY) {
   try {
@@ -52,13 +51,12 @@ if (process.env.GROQ_API_KEY) {
   console.log("ℹ️  GROQ_API_KEY não configurada — auto-resposta por IA desativada (só envio manual via /enviar vai funcionar).");
 }
 
-// Memória de conversa por número (em RAM — reseta se o processo reiniciar).
 const historico = new Map();
 const HISTORICO_MAX_MENSAGENS = 10;
 
 let sock = null;
 let ultimoQrDataUrl = null;
-let statusConexao = "iniciando"; // iniciando | aguardando_qr | conectado | caiu
+let statusConexao = "iniciando";
 
 function carregarEmpresa(numeroCliente) {
   const arquivo = path.join(EMPRESAS_DIR, `${numeroCliente}.json`);
@@ -118,17 +116,8 @@ async function responderComIA(empresa, numeroConversa, textoRecebido) {
   return textoResposta;
 }
 
-// Transforma "5514988324456" ou "14988324456" no formato que o Baileys espera (JID).
 function paraJid(numero) {
   let digitos = String(numero).replace(/\D/g, "");
-  if (digitos.length <= 11) digitos = "55" + digitos; // assume Brasil se vier sem DDI
+  if (digitos.length <= 11) digitos = "55" + digitos;
   return `${digitos}@s.whatsapp.net`;
 }
-
-async function iniciar() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-
-  let version;
-  try {
-    ({ version } = await fetchLatestBaileysVersion());
-  } catch (erro) {
