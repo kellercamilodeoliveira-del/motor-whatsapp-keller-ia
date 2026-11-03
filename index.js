@@ -1,23 +1,25 @@
 /**
  * Motor de WhatsApp — Keller IA
  *
- * O que isso faz:
- *  - Conecta num número de WhatsApp (o SEU número, escaneando um QR Code na página inicial)
- *  - Expõe um endpoint POST /enviar que o Painel de Leads chama pra mandar mensagem
- *    automaticamente pro cliente, sem precisar abrir o WhatsApp manualmente
- *  - (Opcional) Se a variável GROQ_API_KEY estiver configurada, também responde
- *    sozinho quem mandar mensagem, usando os dados da empresa em /empresas
+ * O que faz:
+ *  - Conecta no WhatsApp do Keller (QR code na página inicial, só na primeira vez).
+ *  - ATENDENTE: responde sozinho quem chama, com os dados de empresas/keller-ia.json
+ *    e com tudo o que o Keller já ensinou.
+ *  - Quando não sabe responder, avisa o cliente que vai confirmar e manda a pergunta
+ *    pro Keller na conversa dele com ele mesmo ("Você"). O Keller responde ali
+ *    (arrastando a mensagem pro lado) ou direto na conversa do cliente, e o motor
+ *    guarda a resposta pra usar nas próximas vezes.
+ *  - Se o Keller digitar numa conversa por conta própria, o atendente fica quieto
+ *    nela por 24h (família, amigos). Grupos nunca são respondidos.
+ *  - Endpoints /enviar e /auto-enviar continuam servindo o Painel de Leads.
  *
- * Importante: usa a biblioteca Baileys, que fala com o WhatsApp de forma NÃO oficial
- * (não é a API paga do Meta). É de graça, mas carrega algum risco de o número ser
- * sinalizado se o volume de mensagens ficar muito alto ou repetitivo.
+ * Plano grátis do Render:
+ *  - A sessão do WhatsApp fica salva no Firestore (criptografada), então reinício
+ *    não pede QR code de novo.
+ *  - O próprio motor se chama a cada 10 minutos pra não "dormir".
  *
- * ATENÇÃO SOBRE O PLANO GRATUITO DO RENDER:
- * O disco é apagado toda vez que o serviço reinicia (o que acontece depois de um
- * tempo sem uso, ou a cada novo deploy). Isso significa que a sessão do WhatsApp
- * (o "login") pode precisar ser refeita de vez em quando — vai aparecer um novo QR
- * code na página inicial quando isso acontecer. Se isso incomodar, o plano pago do
- * Render com disco persistente resolve de vez (fica sempre conectado).
+ * Usa a biblioteca Baileys (não oficial). Funciona bem, mas evite volume alto de
+ * mensagens iguais pra não arriscar o número.
  */
 
 require("dotenv").config();
@@ -31,291 +33,480 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  jidNormalizedUser,
+  downloadMediaMessage,
+  generateMessageIDV2,
 } = require("@whiskeysockets/baileys");
 
+const fsdb = require("./firestore");
+const { criarCofre } = require("./cofre");
+const { usarSessaoFirestore } = require("./sessao");
+const { carregarMemoria } = require("./memoria");
+const { criarAtendente } = require("./atendente");
+const { mensagemPadrao, hojeData } = require("./prospeccao");
+
 const EMPRESAS_DIR = path.join(__dirname, "empresas");
+const EMPRESA_ARQUIVO = process.env.EMPRESA_ARQUIVO || "keller-ia.json";
 const AUTH_DIR = path.join(__dirname, "auth_info");
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || ""; // chave que o painel de leads usa pra autenticar o envio
 
-// IA opcional de auto-resposta — só ativa se a chave estiver configurada.
+const PAUSA_KELLER_FALOU_MS = 24 * 60 * 60 * 1000; // Keller entrou numa conversa: atendente fica quieto 24h
+const PAUSA_KELLER_RESOLVEU_MS = 10 * 60 * 1000; // Keller respondeu uma pendência na conversa: volta em 10 min
+const ESPERA_JUNTAR_MS = 6000; // espera o cliente terminar de mandar várias mensagens seguidas
+const IDADE_MAX_MSG_MS = 30 * 60 * 1000; // ignora mensagens antigas (histórico)
+const LIMITE_ENVIOS_POR_DIA = 20;
+const ENVIOS_POR_EXECUCAO = 2;
+
+// ---------- IA ----------
 let groq = null;
 if (process.env.GROQ_API_KEY) {
   try {
     const Groq = require("groq-sdk");
     groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    console.log("🤖 Auto-resposta por IA ativada (GROQ_API_KEY encontrada).");
+    console.log("🤖 Atendente de IA ativado (GROQ_API_KEY encontrada).");
   } catch (erro) {
-    console.error("Não consegui iniciar a IA de auto-resposta (seguindo sem ela):", erro.message);
+    console.error("Não consegui iniciar a IA (seguindo sem ela):", erro.message);
   }
 } else {
-  console.log("ℹ️  GROQ_API_KEY não configurada — auto-resposta por IA desativada (só envio manual via /enviar vai funcionar).");
+  console.log("ℹ️  GROQ_API_KEY não configurada — atendente desligado (só /enviar funciona).");
 }
 
-// Memória de conversa por número (em RAM — reseta se o processo reiniciar).
-const historico = new Map();
-const HISTORICO_MAX_MENSAGENS = 10;
+function carregarEmpresa() {
+  const arquivo = path.join(EMPRESAS_DIR, EMPRESA_ARQUIVO);
+  if (fs.existsSync(arquivo)) return JSON.parse(fs.readFileSync(arquivo, "utf-8"));
+  const primeiro = fs.readdirSync(EMPRESAS_DIR).find((f) => f.endsWith(".json"));
+  return primeiro ? JSON.parse(fs.readFileSync(path.join(EMPRESAS_DIR, primeiro), "utf-8")) : null;
+}
 
+const cofre = criarCofre();
+if (!cofre) console.log("⚠️  Sem SEGREDO_SESSAO/GROQ_API_KEY: sessão e memória não serão salvas no Firestore.");
+
+let memoria = null;
+let atendente = null;
+let sessao = null;
 let sock = null;
 let ultimoQrDataUrl = null;
 let statusConexao = "iniciando"; // iniciando | aguardando_qr | conectado | caiu
 
-function carregarEmpresa(numeroCliente) {
-  const arquivo = path.join(EMPRESAS_DIR, `${numeroCliente}.json`);
-  if (fs.existsSync(arquivo)) {
-    return JSON.parse(fs.readFileSync(arquivo, "utf-8"));
-  }
-  const exemplo = path.join(EMPRESAS_DIR, "exemplo.json");
-  if (fs.existsSync(exemplo)) {
-    return JSON.parse(fs.readFileSync(exemplo, "utf-8"));
-  }
-  return null;
+// ---------- Utilidades ----------
+const enviadasPeloMotor = new Set();
+function lembrarEnviada(id) {
+  enviadasPeloMotor.add(id);
+  if (enviadasPeloMotor.size > 3000) enviadasPeloMotor.delete(enviadasPeloMotor.values().next().value);
 }
 
-function dataHojeExtenso() {
-  const agora = new Date();
-  const formatado = agora.toLocaleDateString("pt-BR", {
-    timeZone: "America/Sao_Paulo",
-    weekday: "long",
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-  });
-  return formatado;
+async function enviar(jid, conteudo) {
+  const messageId = generateMessageIDV2(sock.user?.id);
+  lembrarEnviada(messageId); // antes de enviar: o eco da própria mensagem chega quase na hora
+  return sock.sendMessage(jid, conteudo, { messageId });
 }
 
-const TEM_AGENDA = (empresa) => !!(empresa && empresa.usa_agenda !== false);
-
-function montarPrompt(empresa) {
-  let prompt = `Você é a secretária virtual de "${empresa.nome_empresa}", um(a) ${empresa.segmento}.
-
-REGRAS IMPORTANTES:
-- Responda SOMENTE com base nas informações abaixo. NUNCA invente preço, horário, serviço ou qualquer dado que não esteja aqui.
-- Se perguntarem algo que você não tem informação pra responder, diga educadamente que vai confirmar com a equipe e que alguém vai retornar.
-- Seja breve, simpática e direta — mensagens curtas, como se estivesse no WhatsApp de verdade.
-- Nunca se apresente como "inteligência artificial" a menos que perguntem diretamente; aí seja honesta.
-
-DADOS DA EMPRESA:
-- Endereço: ${empresa.endereco}
-- Horário de funcionamento: ${empresa.horario_funcionamento}
-- Serviços e preços: ${(empresa.servicos || []).map(s => `${s.nome} (${s.preco})`).join(", ")}
-- Como agendar: ${empresa.forma_agendamento}
-- Quando chamar um humano: ${empresa.quando_chamar_humano}
-`;
-
-  if (TEM_AGENDA(empresa)) {
-    prompt += `
-HOJE É: ${dataHojeExtenso()} (use isso pra calcular datas como "amanhã" ou "sexta-feira").
-
-AGENDAMENTO AUTOMÁTICO:
-Quando o cliente confirmar um horário com você (ele aceitou um dia, hora e serviço específicos),
-você deve ANOTAR esse agendamento automaticamente. Pra isso, no FINAL da sua mensagem de confirmação
-pro cliente, inclua uma linha extra, exatamente neste formato (o cliente nunca vê essa linha, ela é
-removida antes de enviar):
-[AGENDAMENTO]{"servico":"nome do serviço","data":"AAAA-MM-DD","hora":"HH:MM","cliente":"nome do cliente se ele disse, senão 'Cliente'"}[/AGENDAMENTO]
-Só inclua essa linha quando o horário estiver REALMENTE confirmado (dia, hora e serviço definidos),
-nunca enquanto ainda estiver negociando ou sugerindo horários.
-`;
-  }
-
-  return prompt;
+function meusJids() {
+  const me = sock?.authState?.creds?.me || sock?.user || {};
+  const s = new Set();
+  if (me.id) s.add(jidNormalizedUser(me.id));
+  if (me.lid) s.add(jidNormalizedUser(me.lid));
+  return s;
+}
+function meuJidPrincipal() {
+  const me = sock?.authState?.creds?.me || sock?.user || {};
+  return me.id ? jidNormalizedUser(me.id) : null;
 }
 
-function extrairAgendamento(texto) {
-  const match = texto.match(/\[AGENDAMENTO\]([\s\S]*?)\[\/AGENDAMENTO\]/);
-  if (!match) return { textoLimpo: texto.trim(), agendamento: null };
-  const textoLimpo = texto.replace(match[0], "").trim();
-  try {
-    const dados = JSON.parse(match[1]);
-    return { textoLimpo, agendamento: dados };
-  } catch {
-    return { textoLimpo, agendamento: null };
-  }
+const conversaPrivada = (jid) => /@(s\.whatsapp\.net|lid)$/.test(jid || "");
+const digitos = (jid) => String(jid || "").split("@")[0].split(":")[0].replace(/\D/g, "");
+const ultimos8 = (n) => String(n || "").replace(/\D/g, "").slice(-8);
+
+function numeroBonito(jid) {
+  if (!/@s\.whatsapp\.net$/.test(jid)) return "número oculto pelo WhatsApp";
+  return `wa.me/${digitos(jid)}`;
 }
 
-async function responderComIA(empresa, numeroConversa, textoRecebido) {
-  const historicoConversa = historico.get(numeroConversa) || [];
-  const mensagens = [
-    { role: "system", content: montarPrompt(empresa) },
-    ...historicoConversa,
-    { role: "user", content: textoRecebido },
-  ];
-
-  const resposta = await groq.chat.completions.create({
-    model: "llama-3.3-70b-versatile",
-    messages: mensagens,
-    temperature: 0.4,
-    max_tokens: 350,
-  });
-
-  const bruto = resposta.choices[0]?.message?.content?.trim()
-    || "Desculpa, deu um probleminha aqui. Já já alguém da equipe te responde!";
-
-  const { textoLimpo, agendamento } = extrairAgendamento(bruto);
-
-  const novoHistorico = [
-    ...historicoConversa,
-    { role: "user", content: textoRecebido },
-    { role: "assistant", content: textoLimpo },
-  ].slice(-HISTORICO_MAX_MENSAGENS);
-  historico.set(numeroConversa, novoHistorico);
-
-  return { texto: textoLimpo, agendamento };
-}
-
-// Transforma "5514988324456" ou "14988324456" no formato que o Baileys espera (JID).
 function paraJid(numero) {
-  let digitos = String(numero).replace(/\D/g, "");
-  if (digitos.length <= 11) digitos = "55" + digitos; // assume Brasil se vier sem DDI
-  return `${digitos}@s.whatsapp.net`;
+  let d = String(numero).replace(/\D/g, "");
+  if (d.length <= 11) d = "55" + d;
+  return `${d}@s.whatsapp.net`;
 }
 
-// ---------- Envio automático diário dos leads do Painel (Firestore) ----------
-// Usa a API REST do Firestore direto (as regras do banco já permitem leitura/escrita
-// pública nessas coleções, então não precisa de credencial de servidor).
-const FIRESTORE_PROJECT = "escritorio-c3acb";
-const FIRESTORE_API_KEY = "AIzaSyBZyZ4Dqs0BI5VSsm3HB2TNGpk7Z7330CE";
-const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT}/databases/(default)/documents`;
-const LIMITE_ENVIOS_POR_DIA = 20;
-const ENVIOS_POR_EXECUCAO = 2; // quantos leads tenta mandar a cada vez que o /auto-enviar roda
-
-function fsValorParaJs(v) {
-  if (v == null) return null;
-  if ("stringValue" in v) return v.stringValue;
-  if ("integerValue" in v) return parseInt(v.integerValue, 10);
-  if ("doubleValue" in v) return v.doubleValue;
-  if ("booleanValue" in v) return v.booleanValue;
-  if ("nullValue" in v) return null;
-  if ("mapValue" in v) return fsCamposParaJs(v.mapValue.fields || {});
-  if ("arrayValue" in v) return (v.arrayValue.values || []).map(fsValorParaJs);
-  return null;
+function conteudoDa(m) {
+  const msg = m.message || {};
+  return msg.ephemeralMessage?.message || msg.viewOnceMessageV2?.message || msg.viewOnceMessage?.message || msg;
 }
-function fsCamposParaJs(fields) {
-  const obj = {};
-  for (const k in fields) obj[k] = fsValorParaJs(fields[k]);
-  return obj;
+function textoDa(m) {
+  const c = conteudoDa(m);
+  return (
+    c.conversation ||
+    c.extendedTextMessage?.text ||
+    c.imageMessage?.caption ||
+    c.videoMessage?.caption ||
+    c.documentMessage?.caption ||
+    c.buttonsResponseMessage?.selectedDisplayText ||
+    c.listResponseMessage?.title ||
+    c.templateButtonReplyMessage?.selectedDisplayText ||
+    ""
+  );
 }
-function jsParaFsValor(v) {
-  if (typeof v === "string") return { stringValue: v };
-  if (typeof v === "number") return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
-  if (typeof v === "boolean") return { booleanValue: v };
-  return { nullValue: null };
+function idadeMs(m) {
+  const t = Number(m.messageTimestamp?.low ?? m.messageTimestamp ?? 0);
+  return t ? Date.now() - t * 1000 : 0;
 }
 
-async function firestoreGetDoc(caminho) {
-  const resp = await fetch(`${FIRESTORE_BASE}/${caminho}?key=${FIRESTORE_API_KEY}`);
-  if (resp.status === 404) return null;
-  if (!resp.ok) throw new Error(`Firestore GET ${caminho} falhou: ${resp.status}`);
-  const data = await resp.json();
-  return fsCamposParaJs(data.fields || {});
+function estaIgnorado(jid, m) {
+  const lista = memoria?.dados.ajustes.ignorar || [];
+  const candidatos = [digitos(jid), digitos(m?.key?.senderPn), digitos(m?.key?.remoteJidAlt)].filter(Boolean);
+  return lista.some((n) => candidatos.some((c) => ultimos8(c) === ultimos8(n)));
+}
+function estaPausado(jid) {
+  const ate = memoria?.dados.pausas[jid];
+  if (!ate) return false;
+  if (Date.now() < ate) return true;
+  delete memoria.dados.pausas[jid];
+  memoria.salvar("pausas");
+  return false;
+}
+function pausar(jid, ms) {
+  memoria.dados.pausas[jid] = Date.now() + ms;
+  memoria.salvar("pausas");
 }
 
-async function firestoreListarColecao(nome) {
-  const resp = await fetch(`${FIRESTORE_BASE}/${nome}?pageSize=300&key=${FIRESTORE_API_KEY}`);
-  if (!resp.ok) throw new Error(`Firestore LIST ${nome} falhou: ${resp.status}`);
-  const data = await resp.json();
-  return (data.documents || []).map((doc) => {
-    const id = doc.name.split("/").pop();
-    return { id, ...fsCamposParaJs(doc.fields || {}) };
-  });
+function gerarCodigo() {
+  const letras = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let c;
+  do {
+    c = Array.from({ length: 3 }, () => letras[Math.floor(Math.random() * letras.length)]).join("");
+  } while (memoria.dados.pendencias[c]);
+  return c;
+}
+function pendenciaDoCliente(jid) {
+  return Object.keys(memoria.dados.pendencias).find((c) => memoria.dados.pendencias[c].jid === jid) || null;
 }
 
-async function firestoreSetCampos(caminho, campos) {
-  const mask = Object.keys(campos).map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join("&");
-  const fields = {};
-  for (const k in campos) fields[k] = jsParaFsValor(campos[k]);
-  const resp = await fetch(`${FIRESTORE_BASE}/${caminho}?${mask}&key=${FIRESTORE_API_KEY}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fields }),
-  });
-  if (!resp.ok) throw new Error(`Firestore PATCH ${caminho} falhou: ${resp.status}`);
-}
-
-async function firestoreCriarDoc(colecao, campos) {
-  const fields = {};
-  for (const k in campos) fields[k] = jsParaFsValor(campos[k]);
-  const resp = await fetch(`${FIRESTORE_BASE}/${colecao}?key=${FIRESTORE_API_KEY}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fields }),
-  });
-  if (!resp.ok) throw new Error(`Firestore POST ${colecao} falhou: ${resp.status}`);
-}
-
-// Mesma lógica de mensagem padrão usada no Painel de Leads (netlify-site/index.html).
-const ABERTURAS = [
-  "Oi! Tudo bem? Me chamo Keller",
-  "Olá! Aqui é o Keller",
-  "Oi, bom dia! Me chamo Keller",
-  "Olá! Tudo certo? Aqui é o Keller",
-];
-const FECHOS = [
-  "Posso te mostrar rapidinho como funciona?",
-  "Topa dar uma olhada?",
-  "Faz sentido pra vocês? Posso te explicar melhor.",
-  "Quer que eu te mande mais detalhes?",
-];
-function hashIndex(str, mod) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
-  return h % mod;
-}
-function mensagemPadrao(lead, empresaConfig) {
-  const empresaLead = lead.empresa || "tudo bem";
-  const seed = String(lead.id || empresaLead || "");
-  const abertura = ABERTURAS[hashIndex(seed, ABERTURAS.length)];
-  const fecho = FECHOS[hashIndex(seed + "x", FECHOS.length)];
-  let msg = "";
-  if (empresaConfig && empresaConfig.nome) {
-    msg += `${abertura}, da ${empresaConfig.nome}. `;
-    if (empresaConfig.nicho) {
-      msg += `Vi o ${empresaLead} aqui${lead.cidade ? " em " + lead.cidade : ""} e trabalho com ${empresaConfig.nicho}. `;
-    } else {
-      msg += `Vi o ${empresaLead} aqui. `;
-    }
-    if (empresaConfig.promocao) {
-      msg += `Essa semana estamos com uma condição especial: ${empresaConfig.promocao}. `;
-    }
-    msg += fecho;
-    return msg;
+async function avisarKeller(texto) {
+  const eu = meuJidPrincipal();
+  if (!eu) return null;
+  try {
+    return await enviar(eu, { text: texto });
+  } catch (erro) {
+    console.error("Não consegui avisar o Keller:", erro.message);
+    return null;
   }
-  const segmento = (lead.segmento || "").toLowerCase();
-  msg += `${abertura}, da Keller IA. `;
-  if (segmento) {
-    msg += `Vi o ${empresaLead} aqui e ajudo negócios de ${segmento} a responder clientes no WhatsApp automaticamente, com atendimento de IA 24h, sem perder nenhuma mensagem. `;
+}
+
+const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------- Atendimento ----------
+const filaCliente = new Map(); // jid -> { partes, nome, timer, msg }
+
+function enfileirarCliente(jid, nome, texto, m) {
+  const f = filaCliente.get(jid) || { partes: [], nome, timer: null, msg: m };
+  f.partes.push(texto);
+  f.nome = nome || f.nome;
+  f.msg = m;
+  clearTimeout(f.timer);
+  f.timer = setTimeout(() => {
+    filaCliente.delete(jid);
+    processarCliente(jid, f.nome, f.partes.join("\n"), f.msg).catch((e) =>
+      console.error("Erro no atendimento:", e)
+    );
+  }, ESPERA_JUNTAR_MS);
+  filaCliente.set(jid, f);
+}
+
+async function processarCliente(jid, nome, texto, m) {
+  if (!memoria.dados.ajustes.ativo || estaPausado(jid) || estaIgnorado(jid, m)) return;
+  const empresa = carregarEmpresa();
+  if (!empresa) return;
+
+  try {
+    await sock.sendPresenceUpdate("composing", jid);
+  } catch {}
+
+  let r;
+  try {
+    r = await atendente.responder(jid, nome, texto);
+  } catch (erro) {
+    console.error("Erro da IA:", erro.message);
+    await avisarKeller(
+      `⚠️ A IA não conseguiu responder ${nome || "um cliente"} (${numeroBonito(jid)}). Mensagem dele:\n\n"${texto}"\n\nResponda você direto na conversa.`
+    );
+    return;
+  }
+
+  if (r.silencio) {
+    console.log(`🤫 Mensagem pessoal de ${nome || jid}, não respondi.`);
+    try {
+      await sock.sendPresenceUpdate("paused", jid);
+    } catch {}
+    return;
+  }
+
+  // Se o Keller entrou na conversa enquanto a IA pensava, não atropela.
+  if (estaPausado(jid)) return;
+
+  if (r.texto) {
+    await espera(Math.min(4000, 1200 + r.texto.length * 25));
+    await enviar(jid, { text: r.texto });
+    console.log(`📤 Respondi ${nome || jid}: ${r.texto}`);
+  }
+  try {
+    await sock.sendPresenceUpdate("paused", jid);
+  } catch {}
+
+  if (r.chamar && r.chamar.pergunta) await criarPendencia(jid, nome, r.chamar.pergunta);
+}
+
+async function criarPendencia(jid, nome, pergunta) {
+  const existente = pendenciaDoCliente(jid);
+  let codigo = existente;
+  if (existente) {
+    const p = memoria.dados.pendencias[existente];
+    p.pergunta = `${p.pergunta} / ${pergunta}`;
   } else {
-    msg += `Vi o ${empresaLead} aqui e ajudo empresas a terem um atendimento automático de IA no WhatsApp, respondendo clientes 24h. `;
+    codigo = gerarCodigo();
+    memoria.dados.pendencias[codigo] = { jid, nome: nome || "", pergunta, criadaEm: Date.now(), alertaId: null };
   }
-  msg += fecho;
-  return msg;
+  const p = memoria.dados.pendencias[codigo];
+  const alerta = await avisarKeller(
+    `❓ *Pergunta de cliente* (#${codigo})\n` +
+      `👤 ${p.nome || "Cliente"} — ${numeroBonito(jid)}\n\n` +
+      `${p.pergunta}\n\n` +
+      `Eu disse que ia confirmar com você. *Arraste esta mensagem pro lado e escreva a resposta*: eu mando pro cliente e guardo pra próxima vez. ` +
+      `Se preferir, responda direto na conversa dele.`
+  );
+  if (alerta?.key?.id) p.alertaId = alerta.key.id;
+  memoria.salvar("pendencias");
 }
 
-function hojeData() {
-  // Data no formato AAAA-MM-DD, fuso de São Paulo (UTC-3), só pra controlar o limite diário.
-  const agora = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  return agora.toISOString().slice(0, 10);
+function guardarConhecimento(pergunta, resposta) {
+  const lista = memoria.dados.conhecimento.filter((c) => c.p.toLowerCase() !== pergunta.toLowerCase());
+  lista.push({ p: pergunta, r: resposta, em: new Date().toISOString().slice(0, 10) });
+  memoria.dados.conhecimento = lista.slice(-300);
+  memoria.salvar("conhecimento");
+}
+
+async function resolverPendencia(codigo, resposta, origem) {
+  const p = memoria.dados.pendencias[codigo];
+  if (!p) return;
+  if (!resposta) {
+    await avisarKeller(`Faltou a resposta da #${codigo}. Escreva assim: #${codigo} sua resposta`);
+    return;
+  }
+  delete memoria.dados.pendencias[codigo];
+  memoria.salvar("pendencias");
+  guardarConhecimento(p.pergunta, resposta);
+
+  if (origem === "conversa") {
+    atendente.anotarFalaDoKeller(p.jid, resposta);
+    pausar(p.jid, PAUSA_KELLER_RESOLVEU_MS);
+    await avisarKeller(`✅ Guardei sua resposta pra "${p.pergunta}". Daqui a 10 minutos eu volto a atender ${p.nome || "esse cliente"}.`);
+    return;
+  }
+
+  try {
+    const texto = await atendente.redigirResposta(p.jid, p.pergunta, resposta);
+    await enviar(p.jid, { text: texto });
+    await avisarKeller(`✅ Respondi ${p.nome || "o cliente"} e guardei pra próxima:\n\n"${texto}"`);
+  } catch (erro) {
+    console.error("Erro ao mandar a resposta do Keller:", erro.message);
+    await enviar(p.jid, { text: resposta });
+    await avisarKeller(`✅ Mandei sua resposta pro ${p.nome || "cliente"} do jeito que você escreveu e guardei pra próxima.`);
+  }
+}
+
+const AJUDA =
+  "🤖 *Comandos do atendente* (mande aqui, na conversa com você mesmo):\n\n" +
+  "• Arraste uma pergunta pro lado e responda: eu repasso e guardo.\n" +
+  "• #ABC resposta → responde a pergunta #ABC\n" +
+  "• #ensinar pergunta | resposta → ensina algo novo\n" +
+  "• #esquecer pergunta → apaga algo que ensinou\n" +
+  "• #ignorar 14999999999 → nunca responder esse número\n" +
+  "• #liberar 14999999999 → voltar a responder esse número\n" +
+  "• #desligar / #ligar → para ou volta todo o atendimento\n" +
+  "• #status → o que está pendente\n" +
+  "• #aprendido → tudo o que você já ensinou";
+
+async function comandoDoKeller(m, texto) {
+  const t = texto.trim();
+  const pend = memoria.dados.pendencias;
+  const citado = conteudoDa(m).extendedTextMessage?.contextInfo?.stanzaId;
+
+  // 1) Resposta a uma pergunta pendente
+  const mc = t.match(/^#([A-Za-z0-9]{3})(?=\s|:|,|-|$)[\s:,-]*/);
+  if (mc && pend[mc[1].toUpperCase()]) return resolverPendencia(mc[1].toUpperCase(), t.slice(mc[0].length).trim(), "chat");
+  if (citado) {
+    const codigo = Object.keys(pend).find((c) => pend[c].alertaId === citado);
+    if (codigo) return resolverPendencia(codigo, t, "chat");
+  }
+
+  // 2) Comandos
+  if (t.startsWith("#")) {
+    const [cmd, ...resto] = t.slice(1).split(/\s+/);
+    const arg = resto.join(" ").trim();
+    switch (cmd.toLowerCase()) {
+      case "ajuda":
+      case "comandos":
+        return avisarKeller(AJUDA);
+      case "status": {
+        const lista = Object.entries(pend).map(([c, p]) => `• #${c} ${p.nome || "Cliente"}: ${p.pergunta}`);
+        return avisarKeller(
+          `📋 Atendente ${memoria.dados.ajustes.ativo ? "LIGADO" : "DESLIGADO"}\n` +
+            `Ensinamentos guardados: ${memoria.dados.conhecimento.length}\n` +
+            `Números ignorados: ${memoria.dados.ajustes.ignorar.length}\n\n` +
+            (lista.length ? `Perguntas esperando você:\n${lista.join("\n")}` : "Nenhuma pergunta pendente. ✅")
+        );
+      }
+      case "aprendido": {
+        const lista = memoria.dados.conhecimento.slice(-40).map((c) => `• ${c.p}\n   → ${c.r}`);
+        return avisarKeller(lista.length ? `📚 O que você já me ensinou:\n\n${lista.join("\n")}` : "Ainda não aprendi nada com você.");
+      }
+      case "ensinar":
+      case "aprender": {
+        const [p, r] = arg.split("|").map((s) => (s || "").trim());
+        if (!p || !r) return avisarKeller("Escreva assim: #ensinar pergunta | resposta");
+        guardarConhecimento(p, r);
+        return avisarKeller(`✅ Aprendi: "${p}" → "${r}"`);
+      }
+      case "esquecer": {
+        const antes = memoria.dados.conhecimento.length;
+        memoria.dados.conhecimento = memoria.dados.conhecimento.filter((c) => !c.p.toLowerCase().includes(arg.toLowerCase()));
+        memoria.salvar("conhecimento");
+        return avisarKeller(`🗑️ Apaguei ${antes - memoria.dados.conhecimento.length} ensinamento(s).`);
+      }
+      case "ignorar": {
+        const n = arg.replace(/\D/g, "");
+        if (n.length < 8) return avisarKeller("Escreva assim: #ignorar 14999999999");
+        if (!memoria.dados.ajustes.ignorar.includes(n)) memoria.dados.ajustes.ignorar.push(n);
+        memoria.salvar("ajustes");
+        return avisarKeller(`🔕 Não vou mais responder o ${n}.`);
+      }
+      case "liberar": {
+        const n = arg.replace(/\D/g, "");
+        memoria.dados.ajustes.ignorar = memoria.dados.ajustes.ignorar.filter((x) => ultimos8(x) !== ultimos8(n));
+        for (const jid of Object.keys(memoria.dados.pausas)) if (ultimos8(digitos(jid)) === ultimos8(n)) delete memoria.dados.pausas[jid];
+        memoria.salvar("ajustes");
+        memoria.salvar("pausas");
+        return avisarKeller(`🔔 Voltei a responder o ${n}.`);
+      }
+      case "desligar":
+      case "pausar":
+        memoria.dados.ajustes.ativo = false;
+        memoria.salvar("ajustes");
+        return avisarKeller("⏸️ Atendente desligado. Mande #ligar pra voltar.");
+      case "ligar":
+      case "ativar":
+        memoria.dados.ajustes.ativo = true;
+        memoria.salvar("ajustes");
+        return avisarKeller("▶️ Atendente ligado.");
+      default:
+        return avisarKeller(`Não conheço o comando #${cmd}.\n\n${AJUDA}`);
+    }
+  }
+
+  // 3) Texto solto: se só tem uma pergunta pendente (de menos de 12h), vale como resposta dela.
+  const codigos = Object.keys(pend);
+  if (codigos.length === 1 && Date.now() - (pend[codigos[0]].criadaEm || 0) < 12 * 60 * 60 * 1000) {
+    return resolverPendencia(codigos[0], t, "chat");
+  }
+}
+
+async function textoDeAudio(m) {
+  try {
+    const buffer = await downloadMediaMessage(m, "buffer", {}, { logger: pino({ level: "silent" }), reuploadRequest: sock.updateMediaMessage });
+    return await atendente.transcrever(buffer);
+  } catch (erro) {
+    console.error("Não consegui transcrever áudio:", erro.message);
+    return null;
+  }
+}
+
+async function tratarMensagem(m, type) {
+  if (!m.message || !m.key?.remoteJid) return;
+  const jid = jidNormalizedUser(m.key.remoteJid);
+  if (!conversaPrivada(jid)) return; // grupos, status, canais: nunca
+  if (idadeMs(m) > IDADE_MAX_MSG_MS) return; // histórico antigo
+  const c = conteudoDa(m);
+  if (c.protocolMessage || c.reactionMessage || c.stickerMessage || c.senderKeyDistributionMessage && !textoDa(m)) return;
+
+  const eu = meusJids();
+  const naMinhaConversa = eu.has(jid);
+
+  if (m.key.fromMe) {
+    if (enviadasPeloMotor.has(m.key.id)) return; // foi o próprio motor
+    const texto = textoDa(m);
+    if (naMinhaConversa) {
+      if (texto && memoria) await comandoDoKeller(m, texto);
+      return;
+    }
+    // Keller digitou numa conversa de cliente
+    if (!memoria) return;
+    const f = filaCliente.get(jid);
+    if (f) {
+      clearTimeout(f.timer);
+      filaCliente.delete(jid);
+    }
+    const codigo = pendenciaDoCliente(jid);
+    if (codigo && texto) return resolverPendencia(codigo, texto, "conversa");
+    pausar(jid, PAUSA_KELLER_FALOU_MS);
+    if (texto && atendente) atendente.anotarFalaDoKeller(jid, texto);
+    console.log(`👤 Keller falou com ${jid}: atendente pausado 24h nessa conversa.`);
+    return;
+  }
+
+  // Mensagem de cliente
+  if (type !== "notify" || naMinhaConversa || !atendente || !memoria) return;
+  if (!memoria.dados.ajustes.ativo || estaPausado(jid) || estaIgnorado(jid, m)) return;
+
+  let texto = textoDa(m);
+  if (!texto && c.audioMessage) {
+    const transcrito = await textoDeAudio(m);
+    texto = transcrito ? `(áudio do cliente) ${transcrito}` : "(o cliente mandou um áudio que não consegui ouvir; peça pra escrever, com gentileza)";
+  }
+  if (!texto && c.imageMessage) texto = "(o cliente mandou uma imagem sem texto)";
+  if (!texto && c.documentMessage) texto = `(o cliente mandou um arquivo: ${c.documentMessage.fileName || "documento"})`;
+  if (!texto && c.locationMessage) texto = "(o cliente mandou uma localização)";
+  if (!texto && c.contactMessage) texto = "(o cliente mandou um contato)";
+  if (!texto) return;
+
+  console.log(`📩 ${m.pushName || jid}: ${texto}`);
+  enfileirarCliente(jid, m.pushName || "", texto, m);
+}
+
+// ---------- Conexão ----------
+async function prepararSessao() {
+  if (cofre) {
+    try {
+      sessao = await usarSessaoFirestore(cofre);
+      console.log(sessao.tinhaSessao ? "🔐 Sessão do WhatsApp recuperada do Firestore." : "🔐 Nenhuma sessão salva ainda: vai pedir QR code.");
+      return;
+    } catch (erro) {
+      console.error("Não consegui usar a sessão do Firestore, usando disco:", erro.message);
+    }
+  }
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  sessao = { state, saveCreds, gravar: async () => {}, apagarTudo: async () => fs.rmSync(AUTH_DIR, { recursive: true, force: true }) };
 }
 
 async function iniciar() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  if (!sessao) await prepararSessao();
 
   let version;
   try {
     ({ version } = await fetchLatestBaileysVersion());
   } catch (erro) {
     console.error("Não consegui checar a versão mais recente do WhatsApp, seguindo com a padrão:", erro.message);
-    version = undefined;
   }
 
   sock = makeWASocket({
     version,
-    auth: state,
+    auth: sessao.state,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
+    markOnlineOnConnect: false, // não "rouba" as notificações do celular do Keller
+    syncFullHistory: false,
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("creds.update", () => sessao.saveCreds().catch((e) => console.error("Erro ao salvar login:", e.message)));
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -324,7 +515,7 @@ async function iniciar() {
       statusConexao = "aguardando_qr";
       try {
         ultimoQrDataUrl = await QRCode.toDataURL(qr);
-        console.log("📱 Novo QR code gerado — abre a página inicial do serviço pra escanear.");
+        console.log("📱 Novo QR code gerado — abra a página inicial do serviço pra escanear.");
       } catch (erro) {
         console.error("Erro ao gerar imagem do QR code:", erro);
       }
@@ -332,12 +523,16 @@ async function iniciar() {
 
     if (connection === "close") {
       statusConexao = "caiu";
-      const deveReconectar =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log("Conexão com o WhatsApp caiu. Reconectar automaticamente?", deveReconectar);
-      if (deveReconectar) {
-        setTimeout(() => iniciar().catch((e) => console.error("Erro ao reconectar:", e)), 2000);
+      const codigo = lastDisconnect?.error?.output?.statusCode;
+      const saiu = codigo === DisconnectReason.loggedOut;
+      console.log(`Conexão caiu (código ${codigo}).${saiu ? " O aparelho foi desconectado: vou pedir QR code de novo." : " Reconectando..."}`);
+      if (saiu) {
+        await sessao.apagarTudo();
+        sessao = null;
+      } else {
+        await sessao.gravar().catch(() => {});
       }
+      setTimeout(() => iniciar().catch((e) => console.error("Erro ao reconectar:", e)), saiu ? 3000 : 2000);
     } else if (connection === "open") {
       statusConexao = "conectado";
       ultimoQrDataUrl = null;
@@ -346,47 +541,11 @@ async function iniciar() {
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify" || !groq) return; // sem IA configurada, não responde sozinho
-
-    for (const msg of messages) {
-      if (!msg.message || msg.key.fromMe) continue;
-
-      const numeroRemetente = msg.key.remoteJid;
-      const texto =
-        msg.message.conversation ||
-        msg.message.extendedTextMessage?.text ||
-        "";
-      if (!texto) continue;
-
-      const numeroEmpresa = sock.user?.id?.split(":")[0];
-      const empresa = carregarEmpresa(numeroEmpresa);
-      if (!empresa) continue;
-
-      console.log(`📩 Mensagem de ${numeroRemetente}: ${texto}`);
+    for (const m of messages) {
       try {
-        const { texto: respostaTexto, agendamento } = await responderComIA(empresa, numeroRemetente, texto);
-        await sock.sendMessage(numeroRemetente, { text: respostaTexto });
-        console.log(`📤 Respondido automaticamente: ${respostaTexto}`);
-
-        if (agendamento) {
-          try {
-            await firestoreCriarDoc("agendamentos", {
-              empresaNumero: numeroEmpresa,
-              clienteNumero: String(numeroRemetente).split("@")[0],
-              cliente: agendamento.cliente || "Cliente",
-              servico: agendamento.servico || "",
-              data: agendamento.data || "",
-              hora: agendamento.hora || "",
-              status: "confirmado",
-              criadoEm: new Date().toISOString(),
-            });
-            console.log(`🗓️  Agendamento salvo: ${agendamento.servico} em ${agendamento.data} ${agendamento.hora}`);
-          } catch (erroAgenda) {
-            console.error("Erro ao salvar agendamento:", erroAgenda);
-          }
-        }
+        await tratarMensagem(m, type);
       } catch (erro) {
-        console.error("Erro ao responder automaticamente:", erro);
+        console.error("Erro ao tratar mensagem:", erro);
       }
     }
   });
@@ -398,27 +557,31 @@ app.use(express.json());
 
 app.get("/", (req, res) => {
   if (statusConexao === "conectado") {
+    const pend = memoria ? Object.keys(memoria.dados.pendencias).length : 0;
     res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:60px">
-        <h1>✅ Motor WhatsApp Keller IA conectado</h1>
-        <p>Pronto pra enviar mensagens automaticamente.</p>
-        <p><a href="/agenda" style="color:#1a7a3c;font-weight:600">📅 Ver agenda de horários marcados</a></p>
+      <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+      <body style="font-family:sans-serif;text-align:center;padding:60px 16px">
+        <h1>✅ Atendente Keller IA ligado</h1>
+        <p>${atendente ? "Respondendo clientes sozinho." : "IA desligada: falta a GROQ_API_KEY no Render."}</p>
+        <p>Perguntas esperando o Keller: <b>${pend}</b></p>
+        <p style="color:#666">Mande <b>#ajuda</b> na sua conversa com você mesmo no WhatsApp pra ver os comandos.</p>
       </body></html>
     `);
   } else if (ultimoQrDataUrl) {
     res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:40px">
+      <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+      <body style="font-family:sans-serif;text-align:center;padding:40px 16px">
         <h1>📱 Escaneie pra conectar seu WhatsApp</h1>
         <p>No celular: WhatsApp → Configurações → Aparelhos conectados → Conectar um aparelho</p>
-        <img src="${ultimoQrDataUrl}" style="width:300px;height:300px" />
+        <img src="${ultimoQrDataUrl}" style="width:300px;height:300px;max-width:100%" />
         <p style="color:#888">A página atualiza sozinha a cada 5 segundos.</p>
         <script>setTimeout(() => location.reload(), 5000);</script>
       </body></html>
     `);
   } else {
     res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:60px">
-        <h1>⏳ Gerando QR code...</h1>
+      <html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;text-align:center;padding:60px">
+        <h1>⏳ Conectando...</h1>
         <p>Atualiza a página em alguns segundos.</p>
         <script>setTimeout(() => location.reload(), 4000);</script>
       </body></html>
@@ -427,70 +590,47 @@ app.get("/", (req, res) => {
 });
 
 app.get("/status", (req, res) => {
-  res.json({ status: statusConexao });
+  res.json({
+    status: statusConexao,
+    atendente: !!atendente,
+    ligado: memoria ? memoria.dados.ajustes.ativo : null,
+    sessaoSalva: !!cofre,
+    pendencias: memoria ? Object.keys(memoria.dados.pendencias).length : 0,
+    ensinamentos: memoria ? memoria.dados.conhecimento.length : 0,
+  });
 });
 
-// Página simples com os horários que a IA marcou sozinha, conversando no WhatsApp.
+// Página simples com os horários marcados (usada pelos agentes de agendamento).
 app.get("/agenda", async (req, res) => {
   try {
-    const numeroEmpresa = sock?.user?.id?.split(":")[0] || "";
-    const todos = await firestoreListarColecao("agendamentos");
+    const numeroEmpresa = digitos(sock?.user?.id);
+    const todos = await fsdb.listarColecao("agendamentos");
     const meus = todos
       .filter((a) => a.empresaNumero === numeroEmpresa)
       .sort((a, b) => `${a.data}${a.hora}`.localeCompare(`${b.data}${b.hora}`));
-
     const hoje = new Date().toISOString().slice(0, 10);
-    const linhas = meus.map((a) => {
-      const passou = a.data < hoje;
-      return `<tr style="${passou ? "opacity:.45" : ""}">
-        <td>${a.data || "-"}</td>
-        <td>${a.hora || "-"}</td>
-        <td>${a.cliente || "-"}</td>
-        <td>${a.servico || "-"}</td>
-        <td><a href="https://wa.me/${a.clienteNumero}" target="_blank" style="color:#1a7a3c">abrir chat</a></td>
-      </tr>`;
-    }).join("");
-
-    res.send(`
-      <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-      <style>
-        body{font-family:sans-serif;max-width:720px;margin:30px auto;padding:0 16px;color:#222}
-        table{width:100%;border-collapse:collapse;margin-top:16px}
-        th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #e3e3e3;font-size:.92rem}
-        th{color:#666;font-weight:600;font-size:.8rem;text-transform:uppercase}
-        a.voltar{color:#666;text-decoration:none;font-size:.9rem}
-      </style></head>
-      <body>
-        <a class="voltar" href="/">← voltar</a>
-        <h1>📅 Agenda</h1>
-        <p style="color:#666">Horários marcados automaticamente pela IA nas conversas do WhatsApp. Os já passados aparecem apagados.</p>
-        ${meus.length === 0
-          ? '<p style="color:#888">Nenhum horário marcado ainda.</p>'
-          : `<table><tr><th>Data</th><th>Hora</th><th>Cliente</th><th>Serviço</th><th></th></tr>${linhas}</table>`}
-      </body></html>
-    `);
+    const linhas = meus
+      .map((a) => `<tr style="${a.data < hoje ? "opacity:.45" : ""}"><td>${a.data || "-"}</td><td>${a.hora || "-"}</td><td>${a.cliente || "-"}</td><td>${a.servico || "-"}</td><td><a href="https://wa.me/${a.clienteNumero}" target="_blank">abrir chat</a></td></tr>`)
+      .join("");
+    res.send(`<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+      <style>body{font-family:sans-serif;max-width:720px;margin:30px auto;padding:0 16px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid #e3e3e3}</style></head>
+      <body><a href="/">← voltar</a><h1>📅 Agenda</h1>
+      ${meus.length ? `<table><tr><th>Data</th><th>Hora</th><th>Cliente</th><th>Serviço</th><th></th></tr>${linhas}</table>` : "<p>Nenhum horário marcado ainda.</p>"}
+      </body></html>`);
   } catch (erro) {
     console.error("Erro ao carregar agenda:", erro);
-    res.status(500).send("Não consegui carregar a agenda agora. Tenta de novo em instantes.");
+    res.status(500).send("Não consegui carregar a agenda agora.");
   }
 });
 
 // O Painel de Leads chama este endpoint pra mandar mensagem automaticamente.
 app.post("/enviar", async (req, res) => {
-  if (API_KEY && req.headers["x-api-key"] !== API_KEY) {
-    return res.status(401).json({ erro: "Chave de API inválida." });
-  }
-  if (statusConexao !== "conectado" || !sock) {
-    return res.status(503).json({ erro: "WhatsApp ainda não está conectado. Escaneie o QR code na página inicial." });
-  }
-
+  if (API_KEY && req.headers["x-api-key"] !== API_KEY) return res.status(401).json({ erro: "Chave de API inválida." });
+  if (statusConexao !== "conectado" || !sock) return res.status(503).json({ erro: "WhatsApp ainda não está conectado." });
   const { numero, mensagem } = req.body || {};
-  if (!numero || !mensagem) {
-    return res.status(400).json({ erro: "Informe 'numero' e 'mensagem' no corpo da requisição." });
-  }
-
+  if (!numero || !mensagem) return res.status(400).json({ erro: "Informe 'numero' e 'mensagem'." });
   try {
-    await sock.sendMessage(paraJid(numero), { text: mensagem });
+    await enviar(paraJid(numero), { text: mensagem });
     res.json({ sucesso: true });
   } catch (erro) {
     console.error("Erro ao enviar mensagem via /enviar:", erro);
@@ -498,54 +638,79 @@ app.post("/enviar", async (req, res) => {
   }
 });
 
-// Roda sozinho (chamado por um agendamento) e manda mensagem pros leads novos do
-// Painel, respeitando um limite diário pra não arriscar o número ser bloqueado.
+// Manda mensagem pros leads novos do Painel, com limite diário.
 app.post("/auto-enviar", async (req, res) => {
-  if (API_KEY && req.headers["x-api-key"] !== API_KEY) {
-    return res.status(401).json({ erro: "Chave de API inválida." });
-  }
-  if (statusConexao !== "conectado" || !sock) {
-    return res.status(503).json({ erro: "WhatsApp ainda não está conectado." });
-  }
-
+  if (API_KEY && req.headers["x-api-key"] !== API_KEY) return res.status(401).json({ erro: "Chave de API inválida." });
+  if (statusConexao !== "conectado" || !sock) return res.status(503).json({ erro: "WhatsApp ainda não está conectado." });
   try {
     const hoje = hojeData();
-    let contador = await firestoreGetDoc("config/envioAutomatico");
-    let enviadosHoje = contador && contador.data === hoje ? (contador.enviadosHoje || 0) : 0;
-
+    const contador = await fsdb.getDoc("config/envioAutomatico");
+    let enviadosHoje = contador && contador.data === hoje ? contador.enviadosHoje || 0 : 0;
     if (enviadosHoje >= LIMITE_ENVIOS_POR_DIA) {
       return res.json({ enviados: 0, motivo: "Limite diário já atingido", enviadosHoje, limite: LIMITE_ENVIOS_POR_DIA });
     }
-
-    const empresaConfig = (await firestoreGetDoc("config/empresa")) || {};
-    const leads = await firestoreListarColecao("leads");
+    const empresaConfig = (await fsdb.getDoc("config/empresa")) || {};
+    const leads = await fsdb.listarColecao("leads");
     const elegiveis = leads.filter((l) => (l.status || "Novo") === "Novo" && l.whatsapp);
-
     const quantos = Math.min(ENVIOS_POR_EXECUCAO, LIMITE_ENVIOS_POR_DIA - enviadosHoje, elegiveis.length);
-    const enviadosNestaExecucao = [];
-
+    const feitos = [];
     for (let i = 0; i < quantos; i++) {
       const lead = elegiveis[i];
-      const mensagem = mensagemPadrao(lead, empresaConfig);
       try {
-        await sock.sendMessage(paraJid(lead.whatsapp), { text: mensagem });
-        await firestoreSetCampos(`leads/${lead.id}`, { status: "Contatado" });
+        await enviar(paraJid(lead.whatsapp), { text: mensagemPadrao(lead, empresaConfig) });
+        await fsdb.setCampos(`leads/${lead.id}`, { status: "Contatado" });
         enviadosHoje++;
-        enviadosNestaExecucao.push(lead.empresa || lead.id);
-        await firestoreSetCampos("config/envioAutomatico", { data: hoje, enviadosHoje });
-        if (i < quantos - 1) await new Promise((r) => setTimeout(r, 8000)); // pequena pausa entre envios
+        feitos.push(lead.empresa || lead.id);
+        await fsdb.setCampos("config/envioAutomatico", { data: hoje, enviadosHoje });
+        if (i < quantos - 1) await espera(8000);
       } catch (erro) {
         console.error(`Erro ao enviar automático pro lead ${lead.id}:`, erro);
       }
     }
-
-    res.json({ enviados: enviadosNestaExecucao.length, para: enviadosNestaExecucao, enviadosHoje, limite: LIMITE_ENVIOS_POR_DIA });
+    res.json({ enviados: feitos.length, para: feitos, enviadosHoje, limite: LIMITE_ENVIOS_POR_DIA });
   } catch (erro) {
     console.error("Erro no envio automático:", erro);
     res.status(500).json({ erro: "Falha no envio automático.", detalhe: erro.message });
   }
 });
 
-app.listen(PORT, () => console.log(`Servidor HTTP ouvindo na porta ${PORT}`));
+// ---------- Partida ----------
+async function principal() {
+  memoria = await carregarMemoria(cofre);
+  const empresa = carregarEmpresa();
+  if (groq && empresa) atendente = criarAtendente({ groq, empresa, memoria });
+  app.listen(PORT, () => console.log(`Servidor HTTP ouvindo na porta ${PORT}`));
+  await iniciar();
 
-iniciar().catch((err) => console.error("Erro ao iniciar conexão com o WhatsApp:", err));
+  // Mantém o serviço acordado no plano grátis do Render.
+  const urlPublica = process.env.RENDER_EXTERNAL_URL;
+  if (urlPublica) {
+    setInterval(() => fetch(`${urlPublica}/status`).catch(() => {}), 10 * 60 * 1000);
+    console.log(`⏰ Me chamando a cada 10 minutos em ${urlPublica} pra não dormir.`);
+  }
+}
+
+async function desligar() {
+  try {
+    await sessao?.gravar();
+  } catch {}
+  process.exit(0);
+}
+if (require.main === module) {
+  process.on("SIGTERM", desligar);
+  process.on("SIGINT", desligar);
+  principal().catch((err) => console.error("Erro ao iniciar:", err));
+}
+
+// Usado só pelos testes.
+module.exports = {
+  _teste: {
+    preparar: (o) => {
+      sock = o.sock;
+      memoria = o.memoria;
+      atendente = o.atendente;
+    },
+    tratarMensagem,
+    filaCliente,
+  },
+};

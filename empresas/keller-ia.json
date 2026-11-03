@@ -1,27 +1,53 @@
 {
   "nome_empresa": "Keller IA",
-  "segmento": "Serviços de automação e inteligência artificial para empresas",
-  "horario_funcionamento": "Segunda a sexta, das 8h às 18h (fora desse horário, a resposta pode demorar um pouco mais)",
-  "endereco": "Atendimento remoto, para empresas de Marília, Garça, Ourinhos e região",
+  "segmento": "Cria sistemas, apps e automações com inteligência artificial para pequenas e médias empresas: atendente de IA no WhatsApp, painéis, checklists, ponto eletrônico, gestão de EPI e sistemas sob medida.",
+  "horario_funcionamento": "O atendimento automático responde 24 horas. O Keller retorna pessoalmente de segunda a sexta, das 8h às 18h.",
+  "endereco": "Base em Areiópolis-SP. Atendimento presencial em Areiópolis, Marília, Garça, Ourinhos, Álvaro de Carvalho, São Manuel, Botucatu, Avaré, Tupã, Assis e Lins. Para o resto do Brasil e para fora do país, a implantação é 100% online, por videochamada.",
+  "contato": "WhatsApp (14) 98832-4456, Instagram @keller_camilo, site https://kellercamilodeoliveira-del.github.io",
   "servicos": [
     {
-      "nome": "Dashboard e BI (painel de indicadores pra gestão)",
-      "preco": "R$1.500 a R$3.000, dependendo da complexidade"
+      "nome": "Atendente de IA no WhatsApp",
+      "descricao": "responde os clientes da empresa 24h, tira dúvidas, agenda horários sozinho e chama o dono quando precisa (este atendimento que o cliente está usando agora é um exemplo)",
+      "preco": "de R$2.000 a R$5.000, conforme o que precisar"
     },
     {
-      "nome": "Automação de processos (planilhas, tarefas repetitivas, integrações)",
-      "preco": "R$1.200 a R$3.500, dependendo do processo"
+      "nome": "Painel de vendas, estoque e indicadores (dashboard)",
+      "descricao": "junta as informações da empresa num lugar só, mostra o que vende mais e avisa o que está acabando",
+      "preco": "de R$1.500 a R$3.000, conforme a complexidade"
     },
     {
-      "nome": "Chatbot com IA no WhatsApp (pra responder clientes automaticamente)",
-      "preco": "R$2.000 a R$5.000"
+      "nome": "Automação de processos",
+      "descricao": "planilhas, tarefas repetitivas e integrações que hoje tomam tempo da equipe",
+      "preco": "de R$1.200 a R$3.500, conforme o processo"
     },
     {
-      "nome": "Agente de IA interno (pra otimizar processos da empresa)",
-      "preco": "Sob consulta, de acordo com o escopo do projeto"
+      "nome": "Checklist de Frota",
+      "descricao": "app de inspeção de veículos e tratores pelo celular, funciona online e offline, alerta o gestor no WhatsApp, login por empresa",
+      "preco": "sob consulta"
+    },
+    {
+      "nome": "Ponto Eletrônico",
+      "descricao": "funcionário marca entrada e saída pelo celular com horário e localização; o sistema soma horas extras, atrasos e banco de horas e gera o relatório do mês",
+      "preco": "sob consulta"
+    },
+    {
+      "nome": "Gestão de EPI",
+      "descricao": "controle de entrega e estoque de equipamentos de proteção, com comprovante de entrega para cada funcionário",
+      "preco": "sob consulta"
+    },
+    {
+      "nome": "Agente de IA interno e sistema sob medida",
+      "descricao": "o Keller entende o processo que trava a empresa e cria o sistema certo, do zero",
+      "preco": "sob consulta, de acordo com o escopo"
+    },
+    {
+      "nome": "Empresa aparecendo no Google e nas redes todo dia",
+      "descricao": "perfil no Google, site e posts automáticos diários no Instagram, Facebook, Google e LinkedIn",
+      "preco": "sob consulta"
     }
   ],
-  "forma_agendamento": "Confirma o interesse por aqui no WhatsApp, e o Keller entra em contato pra marcar uma conversa (ligação ou vídeo-chamada) pra entender a necessidade da empresa e montar uma proposta.",
-  "mensagem_boas_vindas": "Oi! Aqui é da Keller IA 🤖 Ajudamos empresas a automatizar processos e criar sistemas com inteligência artificial — painéis, automações, chatbots e agentes de IA. Me conta rapidinho: qual é o principal problema ou processo que você gostaria de resolver na sua empresa?",
-  "quando_chamar_humano": "Sempre que o cliente pedir preço fechado, quiser fazer uma proposta, perguntar algo técnico mais específico que não está nessa lista, ou demonstrar urgência/insatisfação. Nesses casos, responder que o Keller vai assumir a conversa e dar o próximo retorno."
+  "observacoes": "O Keller mostra o sistema funcionando antes de o cliente decidir. Valores 'sob consulta' o Keller passa depois de entender a empresa. Nunca dê desconto nem feche valor: isso é com o Keller.",
+  "forma_agendamento": "Entender o que a empresa precisa (ramo, cidade, como faz hoje) e chamar o Keller para combinar uma conversa por ligação ou videochamada, onde ele mostra o sistema funcionando e monta a proposta.",
+  "quando_chamar_humano": "Chame o Keller quando o cliente pedir preço fechado ou desconto, quiser proposta ou contrato, perguntar algo técnico que não está nos dados, quiser marcar conversa ou demonstração, demonstrar urgência ou insatisfação, ou falar de pagamento.",
+  "usa_agenda": false
 }
