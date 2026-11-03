@@ -12,8 +12,9 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
 - **Aprende**: o Keller responde arrastando a pergunta pro lado (ou escrevendo
   `#ABC resposta`, ou direto na conversa do cliente). O motor repassa ao cliente e
   guarda a resposta pra próximas vezes.
-- **Respeita o pessoal**: se o Keller digitar numa conversa, o atendente fica quieto
-  nela por 24h. Grupos nunca são respondidos. Mensagem claramente pessoal é ignorada.
+- **Conversa com todo mundo**, inclusive família e amigos (sem inventar nada sobre o
+  Keller). Se o Keller digitar numa conversa, o atendente fica quieto nela por 2h.
+  Grupos nunca são respondidos.
 - **Comandos** (na conversa do Keller com ele mesmo): `#ajuda`, `#status`,
   `#aprendido`, `#ensinar pergunta | resposta`, `#esquecer pergunta`,
   `#ignorar número`, `#liberar número`, `#desligar`, `#ligar`.

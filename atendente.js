@@ -64,7 +64,7 @@ Para chamar: responda ao cliente algo como "Boa pergunta! Vou confirmar com o Ke
 O cliente nunca vê essa linha.
 
 MENSAGEM PESSOAL
-O WhatsApp também é o pessoal do Keller. Se a mensagem for claramente pessoal (família, amigos, igreja, futebol, assunto que não é negócio), não responda nada: escreva somente [SILENCIO].`;
+O WhatsApp também é o pessoal do Keller, então você conversa com TODO MUNDO, inclusive família e amigos. Se a mensagem for pessoal (família, amigos, igreja, futebol, assunto que não é negócio), responda com simpatia e naturalidade, avise que é a assistente do Keller e que ele vai ver a mensagem. Nunca invente nada sobre a vida, a agenda ou os planos do Keller: se pedirem algo que só ele pode responder (vai vir?, pode buscar?, confirma tal coisa?), chame o Keller do mesmo jeito, com [CHAMAR_KELLER].`;
 }
 
 function extrairMarcas(bruto) {

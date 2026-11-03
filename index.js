@@ -9,8 +9,8 @@
  *    pro Keller na conversa dele com ele mesmo ("Você"). O Keller responde ali
  *    (arrastando a mensagem pro lado) ou direto na conversa do cliente, e o motor
  *    guarda a resposta pra usar nas próximas vezes.
- *  - Se o Keller digitar numa conversa por conta própria, o atendente fica quieto
- *    nela por 24h (família, amigos). Grupos nunca são respondidos.
+ *  - Conversa com todo mundo (clientes, família, amigos). Se o Keller digitar numa
+ *    conversa, o atendente fica quieto nela por 2h. Grupos nunca são respondidos.
  *  - Endpoints /enviar e /auto-enviar continuam servindo o Painel de Leads.
  *
  * Plano grátis do Render:
@@ -51,7 +51,7 @@ const AUTH_DIR = path.join(__dirname, "auth_info");
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || ""; // chave que o painel de leads usa pra autenticar o envio
 
-const PAUSA_KELLER_FALOU_MS = 24 * 60 * 60 * 1000; // Keller entrou numa conversa: atendente fica quieto 24h
+const PAUSA_KELLER_FALOU_MS = 2 * 60 * 60 * 1000; // Keller entrou numa conversa: atendente fica quieto 2h pra não atropelar
 const PAUSA_KELLER_RESOLVEU_MS = 10 * 60 * 1000; // Keller respondeu uma pendência na conversa: volta em 10 min
 const ESPERA_JUNTAR_MS = 6000; // espera o cliente terminar de mandar várias mensagens seguidas
 const IDADE_MAX_MSG_MS = 30 * 60 * 1000; // ignora mensagens antigas (histórico)
@@ -449,7 +449,7 @@ async function tratarMensagem(m, type) {
     if (codigo && texto) return resolverPendencia(codigo, texto, "conversa");
     pausar(jid, PAUSA_KELLER_FALOU_MS);
     if (texto && atendente) atendente.anotarFalaDoKeller(jid, texto);
-    console.log(`👤 Keller falou com ${jid}: atendente pausado 24h nessa conversa.`);
+    console.log(`👤 Keller falou com ${jid}: atendente pausado 2h nessa conversa.`);
     return;
   }
 
