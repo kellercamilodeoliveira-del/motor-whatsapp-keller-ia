@@ -6,7 +6,7 @@
  *
  * Como: as chaves ficam espalhadas em 8 documentos "config/waSessao0..7"
  * (cada campo = uma chave criptografada). As gravações são juntadas e enviadas
- * a cada 30 segundos, para não estourar a cota grátis do Firestore.
+ * a cada 10 segundos (e logo após cada mensagem enviada), para não estourar a cota grátis do Firestore.
  * Chaves de grupo (sender-key) ficam só na memória: o atendente não fala em grupo.
  */
 const { initAuthCreds, proto } = require("@whiskeysockets/baileys");
@@ -15,7 +15,7 @@ const fsdb = require("./firestore");
 const SHARDS = 8;
 const PREFIXO_DOC = process.env.SESSAO_PREFIXO || "config/waSessao";
 const TIPOS_SO_MEMORIA = new Set(["sender-key", "sender-key-memory"]);
-const INTERVALO_GRAVACAO_MS = 30 * 1000;
+const INTERVALO_GRAVACAO_MS = 10 * 1000;
 
 async function usarSessaoFirestore(cofre) {
   const cache = new Map(); // nome -> valor
@@ -68,7 +68,7 @@ async function usarSessaoFirestore(cofre) {
         try {
           await fsdb.setCampos(`${PREFIXO_DOC}${s}`, parte);
         } catch (erro) {
-          console.error("Erro ao salvar sessão no Firestore (tento de novo em 30s):", erro.message);
+          console.error("Erro ao salvar sessão no Firestore (tento de novo em 10s):", erro.message);
           // Devolve para a fila só o que não foi atualizado de novo nesse meio tempo.
           for (const [nome, valor] of lote) {
             if (!sujos.has(nome) && campoDe(nome) in parte) sujos.set(nome, valor);

@@ -96,10 +96,39 @@ function lembrarEnviada(id) {
   if (enviadasPeloMotor.size > 3000) enviadasPeloMotor.delete(enviadasPeloMotor.values().next().value);
 }
 
+// Guarda as mensagens que o motor mandou. Se o celular de quem recebe não
+// conseguir abrir a criptografia, ele pede reenvio, e o Baileys busca aqui
+// (getMessage). Sem isso a mensagem fica "Aguardando mensagem" pra sempre.
+const MAX_GUARDADAS = 500;
+const mensagensGuardadas = new Map(); // id -> conteúdo (proto.IMessage)
+function guardarMensagem(id, conteudo) {
+  if (!id || !conteudo) return;
+  mensagensGuardadas.set(id, conteudo);
+  if (mensagensGuardadas.size > MAX_GUARDADAS) mensagensGuardadas.delete(mensagensGuardadas.keys().next().value);
+}
+
+// Contador de tentativas de reenvio (o Baileys usa pra não reenviar em loop).
+const contadorReenvio = (() => {
+  const m = new Map();
+  return {
+    get: (k) => m.get(k),
+    set: (k, v) => {
+      m.set(k, v);
+      if (m.size > 2000) m.delete(m.keys().next().value);
+    },
+    del: (k) => m.delete(k),
+    flushAll: () => m.clear(),
+  };
+})();
+
 async function enviar(jid, conteudo) {
   const messageId = generateMessageIDV2(sock.user?.id);
   lembrarEnviada(messageId); // antes de enviar: o eco da própria mensagem chega quase na hora
-  return sock.sendMessage(jid, conteudo, { messageId });
+  const enviada = await sock.sendMessage(jid, conteudo, { messageId });
+  guardarMensagem(enviada?.key?.id || messageId, enviada?.message);
+  // Cada envio muda as chaves de criptografia: salva já, pra não perder se o Render reiniciar.
+  sessao?.gravar().catch(() => {});
+  return enviada;
 }
 
 function meusJids() {
@@ -504,6 +533,8 @@ async function iniciar() {
     printQRInTerminal: false,
     markOnlineOnConnect: false, // não "rouba" as notificações do celular do Keller
     syncFullHistory: false,
+    msgRetryCounterCache: contadorReenvio,
+    getMessage: async (key) => mensagensGuardadas.get(key.id),
   });
 
   sock.ev.on("creds.update", () => sessao.saveCreds().catch((e) => console.error("Erro ao salvar login:", e.message)));
