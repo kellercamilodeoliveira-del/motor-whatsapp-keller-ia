@@ -211,6 +211,22 @@ function pendenciaDoCliente(jid) {
   return Object.keys(memoria.dados.pendencias).find((c) => memoria.dados.pendencias[c].jid === jid) || null;
 }
 
+// Notificação que TOCA no celular (mensagem pra si mesmo no WhatsApp não toca).
+// Usa o app gratuito ntfy; o tópico é criado pelo comando #aviso.
+async function notificarCelular(titulo, texto) {
+  const topico = memoria?.dados?.ajustes?.ntfy;
+  if (!topico) return;
+  try {
+    await fetch(`https://ntfy.sh/${topico}`, {
+      method: "POST",
+      body: texto,
+      headers: { Title: titulo, Priority: "high", Tags: "bell" },
+    });
+  } catch (erro) {
+    console.error("Não consegui mandar a notificação pro celular:", erro.message);
+  }
+}
+
 async function avisarKeller(texto) {
   const eu = meuJidPrincipal();
   if (!eu) return null;
@@ -283,7 +299,13 @@ async function processarCliente(jid, nome, texto, m) {
   } catch {}
 
   if (r.chamar && r.chamar.pergunta) await criarPendencia(jid, nome, r.chamar.pergunta);
+  else if (PEDIDO_DE_ACAO.test(texto)) await criarPendencia(jid, nome, `Pediu: "${texto}"`);
 }
+
+// Coisas que a assistente não consegue fazer sozinha: se a pessoa pedir e a IA
+// esquecer de chamar o Keller, o motor chama mesmo assim.
+const PEDIDO_DE_ACAO =
+  /\b(alarme|despertador|lembrete|lembra (ele|o keller)|agenda|agendar|marca(r)? (um|uma|o|a)? ?hor[aá]rio|pix|pagar|pagamento|transfer|encomend|comprar|reserva|buscar|busca (eu|a gente)|leva(r)? |traz(er)? |confirma)/i;
 
 async function criarPendencia(jid, nome, pergunta) {
   const existente = pendenciaDoCliente(jid);
@@ -305,6 +327,10 @@ async function criarPendencia(jid, nome, pergunta) {
   );
   if (alerta?.key?.id) p.alertaId = alerta.key.id;
   memoria.salvar("pendencias");
+  await notificarCelular(
+    `Assistente precisa de voce (#${codigo})`,
+    `${p.nome || "Contato"} (${numeroBonito(jid)}): ${p.pergunta}\n\nResponda na conversa com voce mesmo no WhatsApp.`
+  );
 }
 
 function guardarConhecimento(pergunta, resposta) {
@@ -353,6 +379,8 @@ const AJUDA =
   "• #liberar 14999999999 → voltar a responder esse número\n" +
   "• #desligar / #ligar → para ou volta todo o atendimento\n" +
   "• #status → o que está pendente\n" +
+  "• #aviso → liga a notificação que toca no celular quando eu precisar de você\n" +
+  "• #aviso desligar → desliga essa notificação\n" +
   "• #aprendido → tudo o que você já ensinou";
 
 async function comandoDoKeller(m, texto) {
@@ -416,6 +444,29 @@ async function comandoDoKeller(m, texto) {
         memoria.salvar("ajustes");
         memoria.salvar("pausas");
         return avisarKeller(`🔔 Voltei a responder o ${n}.`);
+      }
+      case "aviso":
+      case "notificacao":
+      case "notificação": {
+        if (/^(desligar|off|parar)$/i.test(arg)) {
+          delete memoria.dados.ajustes.ntfy;
+          memoria.salvar("ajustes");
+          return avisarKeller("🔕 Notificação no celular desligada.");
+        }
+        if (!memoria.dados.ajustes.ntfy) {
+          memoria.dados.ajustes.ntfy = "keller-" + require("crypto").randomBytes(9).toString("hex");
+          memoria.salvar("ajustes");
+        }
+        const topico = memoria.dados.ajustes.ntfy;
+        await avisarKeller(
+          "🔔 *Notificação no celular*\n\n" +
+            "1. Instale o app gratuito *ntfy* (App Store ou Play Store).\n" +
+            "2. Abra, toque em *+* e assine este tópico (copie exatamente):\n\n" +
+            `${topico}\n\n` +
+            "3. Permita as notificações.\n\n" +
+            "Pronto: toda vez que alguém pedir algo que só você resolve, seu celular apita. Mandei um teste agora. Não compartilhe esse nome de tópico."
+        );
+        return notificarCelular("Teste da assistente", "Se apareceu, a notificação está funcionando!");
       }
       case "desligar":
       case "pausar":
