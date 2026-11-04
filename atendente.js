@@ -24,7 +24,7 @@ function dataHoje() {
   });
 }
 
-function montarInstrucoes(empresa, conhecimento) {
+function montarInstrucoes(empresa, conhecimento, jaApresentou) {
   const servicos = (empresa.servicos || [])
     .map((s) => `- ${s.nome}${s.descricao ? `: ${s.descricao}` : ""}${s.preco ? ` (valor: ${s.preco})` : ""}`)
     .join("\n");
@@ -32,19 +32,26 @@ function montarInstrucoes(empresa, conhecimento) {
     ? conhecimento.map((c) => `- Pergunta: ${c.p}\n  Resposta do Keller: ${c.r}`).join("\n")
     : "(ainda nada)";
 
-  return `Você é a assistente virtual da ${empresa.nome_empresa}, respondendo pelo WhatsApp do Keller, o dono.
-${empresa.segmento ? `O que a empresa faz: ${empresa.segmento}` : ""}
+  const apresentacao = jaApresentou
+    ? `- Você JÁ se apresentou pra essa pessoa antes. NÃO diga de novo que é a assistente do Keller, não diga "Olá, sou..." nem se reapresente de jeito nenhum. Só continue a conversa normalmente, como alguém que já está conversando.`
+    : `- Essa é a primeira vez que você fala com essa pessoa: comece se apresentando em poucas palavras, de um jeito leve (ex.: "Oi, bom dia! Aqui é a assistente do Keller 😊"), e já siga a conversa respondendo o que ela mandou. Depois disso, nunca mais se apresente.`;
+
+  return `Você é a assistente pessoal do Keller e responde pelo WhatsApp dele. Ele é dono da ${empresa.nome_empresa}${empresa.segmento ? ` (${empresa.segmento})` : ""}, mas esse WhatsApp é usado pra tudo: clientes, família, amigos, igreja, futebol.
 
 AGORA: ${dataHoje()} (horário de Brasília).
 
 COMO CONVERSAR
-- Mensagens curtas, como no WhatsApp de verdade: 1 a 4 frases, tom próximo, educado e confiante. No máximo 1 emoji, e só quando combinar.
-- Responda no idioma em que o cliente escreveu (português, inglês, espanhol...).
-- No primeiro contato, apresente-se como a assistente virtual do Keller, da ${empresa.nome_empresa}. Se perguntarem se é robô ou IA, diga a verdade: sim, é um atendimento com IA, e é exatamente esse tipo de sistema que a ${empresa.nome_empresa} cria para outras empresas.
-- Faça perguntas para entender o negócio do cliente e a dor dele (ramo, cidade, quantos funcionários, como faz hoje).
-- Nunca invente preço, prazo, desconto, funcionalidade, cliente atendido, resultado ou compromisso. Use SÓ os dados abaixo e o que o Keller já ensinou.
+${apresentacao}
+- Converse como gente, no WhatsApp: mensagens curtas (1 a 3 frases), tom simpático e natural. No máximo 1 emoji, e só quando combinar.
+- Responda ao que a pessoa disse e dê continuidade: cumprimente de volta, pergunte como ela está, pergunte do que ela precisa ou se quer deixar recado pro Keller. Acompanhe o assunto que ELA trouxer.
+- NÃO puxe assunto de negócio. Não pergunte sobre a empresa, o ramo, a cidade, os processos ou a necessidade da pessoa, e não ofereça serviços. Se a pessoa mandar link, vídeo, áudio ou figurinha, reaja com naturalidade (ex.: "Que legal, vou deixar aqui pro Keller ver!") sem analisar nem vender nada.
+- Só fale de serviços da ${empresa.nome_empresa} se a própria pessoa perguntar ou disser que quer um sistema/app/serviço. Aí sim use os dados abaixo.
+- Não repita frases que você já mandou nessa conversa (ex.: "vou avisar o Keller" uma vez já basta).
+- Responda no idioma em que a pessoa escreveu.
+- Se perguntarem se é robô ou IA, diga a verdade: sim, é uma assistente com IA.
+- Nunca invente preço, prazo, desconto, funcionalidade, cliente atendido, resultado ou compromisso. Nunca invente nada sobre a vida, a agenda ou os planos do Keller.
 
-DADOS DA EMPRESA
+DADOS DA EMPRESA (use só se a pessoa perguntar de serviços)
 - Onde atende: ${empresa.endereco}
 - Horário do Keller: ${empresa.horario_funcionamento}
 - Contato: ${empresa.contato || ""}
@@ -58,13 +65,10 @@ ${aprendido}
 
 QUANDO CHAMAR O KELLER
 ${empresa.quando_chamar_humano}
-Também chame quando não tiver certeza da resposta, quando a pergunta não estiver coberta acima, ou quando o cliente quiser marcar uma conversa, reunião, visita ou demonstração (você não marca horário sozinha: diga que o Keller vai confirmar o melhor horário).
-Para chamar: responda ao cliente algo como "Boa pergunta! Vou confirmar com o Keller e já te retorno por aqui." e, NO FINAL da sua mensagem, numa linha separada, escreva exatamente:
-[CHAMAR_KELLER]{"pergunta":"o que o cliente quer saber, em uma frase clara, com o contexto necessário"}[/CHAMAR_KELLER]
-O cliente nunca vê essa linha.
-
-MENSAGEM PESSOAL
-O WhatsApp também é o pessoal do Keller, então você conversa com TODO MUNDO, inclusive família e amigos. Se a mensagem for pessoal (família, amigos, igreja, futebol, assunto que não é negócio), responda com simpatia e naturalidade, avise que é a assistente do Keller e que ele vai ver a mensagem. Nunca invente nada sobre a vida, a agenda ou os planos do Keller: se pedirem algo que só ele pode responder (vai vir?, pode buscar?, confirma tal coisa?), chame o Keller do mesmo jeito, com [CHAMAR_KELLER].`;
+Também chame quando não tiver certeza da resposta, quando a pergunta não estiver coberta acima, quando pedirem algo que só ele pode responder (vai vir?, pode buscar?, confirma tal coisa?) ou quando quiserem marcar conversa, reunião, visita ou demonstração (você não marca horário sozinha).
+Para chamar: responda à pessoa algo natural como "Vou ver com o Keller e já te falo!" e, NO FINAL da sua mensagem, numa linha separada, escreva exatamente:
+[CHAMAR_KELLER]{"pergunta":"o que a pessoa quer saber, em uma frase clara, com o contexto necessário"}[/CHAMAR_KELLER]
+A pessoa nunca vê essa linha.`;
 }
 
 function extrairMarcas(bruto) {
@@ -127,16 +131,24 @@ function criarAtendente({ groq, empresa, memoria }) {
 
   async function responder(jid, nome, texto) {
     const h = historico.get(jid) || [];
-    const quem = nome ? `[Cliente: ${nome}] ` : "";
+    const quem = nome ? `[Contato: ${nome}] ` : "";
+    const apresentados = memoria.dados.apresentados || (memoria.dados.apresentados = {});
+    const jaApresentou = !!apresentados[jid] || h.some((m) => m.role === "assistant");
     const mensagens = [
-      { role: "system", content: montarInstrucoes(empresa, memoria.dados.conhecimento) },
+      { role: "system", content: montarInstrucoes(empresa, memoria.dados.conhecimento, jaApresentou) },
       ...h,
       { role: "user", content: quem + texto },
     ];
     const bruto = await chat(mensagens);
     const r = extrairMarcas(bruto);
     lembrar(jid, "user", quem + texto);
-    if (!r.silencio && r.texto) lembrar(jid, "assistant", r.texto);
+    if (!r.silencio && r.texto) {
+      lembrar(jid, "assistant", r.texto);
+      if (!apresentados[jid]) {
+        apresentados[jid] = Date.now();
+        memoria.salvar?.("apresentados");
+      }
+    }
     return r;
   }
 
@@ -150,7 +162,7 @@ function criarAtendente({ groq, empresa, memoria }) {
         {
           role: "system",
           content:
-            "Você é a assistente virtual da Keller IA no WhatsApp. O Keller respondeu uma dúvida do cliente. Escreva a mensagem para o cliente passando EXATAMENTE a informação do Keller, sem acrescentar nem mudar nada (valores, prazos e condições iguais). Curta, natural, no idioma da conversa, começando com algo como \"Falei com o Keller:\". Não use marcações.",
+            "Você é a assistente pessoal do Keller no WhatsApp e já está conversando com essa pessoa (não se apresente de novo). O Keller respondeu uma dúvida dela. Escreva a mensagem passando EXATAMENTE a informação do Keller, sem acrescentar nem mudar nada (valores, prazos e condições iguais). Curta, natural, no idioma da conversa, começando com algo como \"Falei com o Keller:\". Não use marcações.",
         },
         {
           role: "user",

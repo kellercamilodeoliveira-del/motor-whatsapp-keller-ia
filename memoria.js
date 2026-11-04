@@ -6,7 +6,7 @@
 const fsdb = require("./firestore");
 
 const DOC = process.env.MEMORIA_DOC || "config/atendenteMemoria";
-const CAMPOS = ["conhecimento", "pendencias", "pausas", "ajustes"];
+const CAMPOS = ["conhecimento", "pendencias", "pausas", "ajustes", "apresentados"];
 
 async function carregarMemoria(cofre) {
   const dados = {
@@ -14,6 +14,7 @@ async function carregarMemoria(cofre) {
     pendencias: {}, // codigo -> { jid, nome, pergunta, criadaEm, alertaId }
     pausas: {}, // jid -> ate (ms)
     ajustes: { ativo: true, ignorar: [] }, // ignorar = só dígitos do número
+    apresentados: {}, // jid -> quando a assistente se apresentou (ms); só se apresenta 1 vez por pessoa
   };
 
   if (cofre) {

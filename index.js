@@ -489,7 +489,7 @@ async function tratarMensagem(m, type) {
   let texto = textoDa(m);
   if (!texto && c.audioMessage) {
     const transcrito = await textoDeAudio(m);
-    texto = transcrito ? `(áudio do cliente) ${transcrito}` : "(o cliente mandou um áudio que não consegui ouvir; peça pra escrever, com gentileza)";
+    texto = transcrito ? `(áudio) ${transcrito}` : "(a pessoa mandou um áudio que não consegui ouvir; peça com gentileza pra escrever)";
   }
   if (!texto && c.imageMessage) texto = "(o cliente mandou uma imagem sem texto)";
   if (!texto && c.documentMessage) texto = `(o cliente mandou um arquivo: ${c.documentMessage.fileName || "documento"})`;
