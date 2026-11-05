@@ -395,9 +395,20 @@ async function processarCliente(jid, nome, texto, m) {
   if (estaPausado(jid)) return;
 
   if (r.texto) {
-    await espera(Math.min(4000, 1200 + r.texto.length * 25));
-    await enviar(jid, { text: r.texto });
-    console.log(`📤 Respondi ${nome || jid}: ${r.texto}`);
+    // Como gente: às vezes 2 mensagens seguidas, com "digitando..." entre elas.
+    const partes = r.texto.split(/\n\s*\n/).map((x) => x.trim()).filter(Boolean);
+    const bolhas = partes.length > 2 ? [partes[0], partes.slice(1).join("\n")] : partes;
+    for (let i = 0; i < bolhas.length; i++) {
+      if (i > 0) {
+        try {
+          await sock.sendPresenceUpdate("composing", jid);
+        } catch {}
+      }
+      await espera(Math.min(6000, 1000 + bolhas[i].length * 45 + Math.random() * 800));
+      if (estaPausado(jid)) return; // Keller entrou na conversa no meio
+      await enviar(jid, { text: bolhas[i] });
+    }
+    console.log(`📤 Respondi ${nome || jid}: ${bolhas.join(" / ")}`);
   }
   try {
     await sock.sendPresenceUpdate("paused", jid);
@@ -1018,7 +1029,7 @@ app.post("/auto-enviar", async (req, res) => {
 async function principal() {
   memoria = await carregarMemoria(cofre);
   const empresa = carregarEmpresa();
-  if (groq && empresa) atendente = criarAtendente({ groq, empresa, memoria });
+  if (groq && empresa) atendente = criarAtendente({ groq, empresa, memoria, cofre, fsdb });
   app.listen(PORT, () => console.log(`Servidor HTTP ouvindo na porta ${PORT}`));
   await iniciar();
 

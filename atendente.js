@@ -68,19 +68,25 @@ AGORA: ${dataHoje()} (horário de Brasília).
 
 COMO CONVERSAR
 ${apresentacao}
-- Escreva como uma pessoa de verdade escreve no WhatsApp, não como robô nem como atendente de empresa. Tom leve, simpático e próximo, educado sem ser formal. Português do dia a dia do interior de SP: "tá", "pra", "beleza", "show", "tranquilo", "que bom", "opa", "imagina", "pode deixar".
-- Espelhe a pessoa: se ela manda mensagem curta, responda curto (às vezes 1 frase basta). Se ela é mais formal (senhor/senhora, empresa séria), seja um pouco mais caprichada, mas sempre calorosa.
-- Mensagens curtas: 1 a 3 frases. Nada de listas, tópicos, negrito ou textão. Emoji só de vez em quando (no máximo 1), quando combinar.
-- Varie o jeito de falar: não comece toda mensagem do mesmo jeito, não repita "Que legal!", "Entendi!" ou "Perfeito!" toda hora. Nem sempre termine com pergunta; às vezes só comente ou concorde, como numa conversa normal.
-- Reaja ao que a pessoa disse antes de responder ("Ah, que bom!", "Nossa, sério?", "Haha verdade"). Mostre que leu de verdade.
-- PROIBIDO frases de robô/SAC: "Como posso ajudar?", "Em que posso ser útil?", "Fico à disposição", "Estou aqui para ajudar", "Qualquer dúvida estou à disposição", "Agradecemos o contato", "Prezado(a)", "Olá! Tudo bem? Em que posso ajudar hoje?".
-- Exemplos do tom certo (depois de já ter se apresentado):
-  Pessoa: "Opa" → "Opa, beleza? Tudo certo por aí?"
-  Pessoa: "Tudo e vc?" → "Tudo ótimo, graças a Deus!"
-  Pessoa: "Bom dia, abençoado" → "Bom dia! Amém, pra você também 🙏"
-  Pessoa: "Kkkkk viu isso?" (manda um vídeo) → "Haha muito bom 😂"
-  Pessoa: "Quanto fica um sistema desses?" → "Depende bastante do que você precisa. Me conta rapidinho o que você quer que o sistema faça?"
-  Pessoa: "Obrigado!" → "Imagina! Precisando, é só chamar."
+- Você está numa conversa de WhatsApp entre pessoas. Escreva exatamente como uma pessoa simpática do interior de SP escreve no celular: frases curtas, jeito falado, sem formalidade. Ex.: "tá", "pra", "vc" (às vezes), "beleza", "show", "tranquilo", "nossa", "que bom", "imagina", "pode deixar", "haha", "kkk" (quando a pessoa também ri).
+- Tamanho: na maioria das vezes 1 frase curta, às vezes 2. Só escreva mais se a pessoa fez uma pergunta que precisa de explicação. Quem manda "ok" não recebe parágrafo.
+- Se quiser falar duas coisas, pode mandar em 2 mensagens separadas por UMA linha em branco, como gente faz no WhatsApp (ex.: "Opa, tudo certo!" + linha em branco + "E aí, como foi lá?"). No máximo 2.
+- Espelhe a pessoa: o tamanho, a energia, se usa emoji ou não, se escreve formal ou informal. Se ela é séria, seja educada e direta; se é brincalhona, brinque junto.
+- Nem toda mensagem precisa de pergunta no final. Gente de verdade às vezes só responde "Verdade!", "Haha demais", "Amém 🙏", "Que bom!".
+- Use o nome da pessoa só de vez em quando, não em toda mensagem.
+- Emoji: no máximo 1, e não em toda mensagem.
+- Quando a conversa já acabou (a pessoa mandou só "ok", "👍", "blz", "valeu", "obrigado", "kkk" depois de tudo resolvido, ou um "boa noite" de despedida que você já respondeu), você pode NÃO responder: escreva só [SILENCIO]. Responder tudo, sempre, é coisa de robô.
+- Jamais use frases de atendimento/SAC: "Como posso ajudar?", "Em que posso ser útil?", "Fico à disposição", "Estou aqui para ajudar", "Qualquer dúvida estou à disposição", "Agradecemos o contato", "Prezado(a)", "Ficamos felizes", "Entendo perfeitamente", "Certamente!", "Com certeza! 😊".
+- Não use pontuação de robô: nada de "!" em toda frase, nada de listas, tópicos, negrito ou travessão (—).
+- Exemplos de conversa real (já depois de ter se apresentado):
+  Pessoa: "Opa" → "Opa, beleza?"
+  Pessoa: "Tudo e vc?" → "Tudo certo por aqui, graças a Deus"
+  Pessoa: "Bom dia, abençoado" → "Bom dia! Amém, pra vc também 🙏"
+  Pessoa: (manda vídeo engraçado) "kkkkk olha isso" → "KKKKK não acredito"
+  Pessoa: "Vai ter jogo hoje?" → "Isso eu vou ver aqui e já te falo"
+  Pessoa: "Obrigado!" → "Imagina!"
+  Pessoa: "ok" (assunto encerrado) → [SILENCIO]
+  Pessoa: "Quanto fica um sistema desses?" → "Depende do que vc precisa" + linha em branco + "Me conta rapidinho o que vc quer que ele faça?"
 - NÃO puxe assunto de negócio. Não pergunte sobre a empresa, o ramo, a cidade, os processos ou a necessidade da pessoa, e não ofereça serviços. Se a pessoa mandar link, vídeo, áudio ou figurinha, reaja com naturalidade (ex.: "Que legal!") sem analisar nem vender nada.
 - Só fale de serviços da ${empresa.nome_empresa} se a própria pessoa perguntar ou disser que quer um sistema/app/serviço. Aí sim use os dados abaixo.
 - Nunca repita frases ou ideias que você já mandou nessa conversa.
@@ -211,8 +217,64 @@ function parecida(a, b) {
 const FRASE_DE_ESPERA = /(verific|ja te retorno|ja te falo|ja ja|deixa eu ver|vou ver|te retorno|um instante|so um minuto|aguarda)/;
 const RESPOSTAS_CURTAS = ["Beleza 👍", "Fechado!", "Tá certo!", "Pode deixar.", "Combinado!", "Show!", "Tranquilo!", "Certo 👍"];
 
-function criarAtendente({ groq, empresa, memoria }) {
+function criarAtendente({ groq, empresa, memoria, cofre = null, fsdb = null }) {
   const historico = new Map(); // jid -> [{role, content}]
+
+  // ----- Histórico salvo no Firestore -----
+  // Sem isso, cada reinício do Render apagava a conversa e a assistente
+  // "esquecia" o que estava falando (e parecia robô). Fica criptografado,
+  // espalhado em 4 documentos, só as últimas mensagens de cada pessoa.
+  const SHARDS_CONVERSA = 4;
+  const DIAS_GUARDAR = 30;
+  const campoDe = (jid) => "h" + cofre.hash("conversa:" + jid);
+  const shardDe = (campo) => `config/conversas${parseInt(campo.slice(1, 3), 16) % SHARDS_CONVERSA}`;
+  const aSalvar = new Set();
+  let timerSalvar = null;
+  const carregado = (async () => {
+    if (!cofre || !fsdb) return;
+    for (let i = 0; i < SHARDS_CONVERSA; i++) {
+      try {
+        const doc = await fsdb.getDoc(`config/conversas${i}`);
+        if (!doc) continue;
+        const velhos = {};
+        for (const campo in doc) {
+          try {
+            const { jid, h, em } = cofre.decifrar(doc[campo]);
+            if (Date.now() - (em || 0) > DIAS_GUARDAR * 864e5) velhos[campo] = undefined;
+            else if (jid && Array.isArray(h) && !historico.has(jid)) historico.set(jid, h);
+          } catch {}
+        }
+        if (Object.keys(velhos).length) fsdb.setCampos(`config/conversas${i}`, velhos).catch(() => {});
+      } catch (erro) {
+        console.error("Não consegui carregar o histórico das conversas:", erro.message);
+      }
+    }
+    console.log(`💬 Histórico de ${historico.size} conversa(s) recuperado.`);
+  })();
+  function agendarSalvar(jid) {
+    if (!cofre || !fsdb) return;
+    aSalvar.add(jid);
+    if (timerSalvar) return;
+    timerSalvar = setTimeout(async () => {
+      timerSalvar = null;
+      const porDoc = new Map();
+      for (const j of aSalvar) {
+        const campo = campoDe(j);
+        const doc = shardDe(campo);
+        if (!porDoc.has(doc)) porDoc.set(doc, {});
+        porDoc.get(doc)[campo] = cofre.cifrar({ jid: j, h: historico.get(j) || [], em: Date.now() });
+      }
+      aSalvar.clear();
+      for (const [doc, campos] of porDoc) {
+        try {
+          await fsdb.setCampos(doc, campos);
+        } catch (erro) {
+          console.error("Erro ao salvar histórico:", erro.message);
+        }
+      }
+    }, 5000);
+    timerSalvar.unref?.();
+  }
 
   async function chat(mensagens, opcoes = {}) {
     let ultimoErro;
@@ -239,11 +301,13 @@ function criarAtendente({ groq, empresa, memoria }) {
 
   function lembrar(jid, role, content) {
     const h = historico.get(jid) || [];
-    h.push({ role, content });
+    h.push({ role, content: String(content || "").slice(0, 600) });
     historico.set(jid, h.slice(-HISTORICO_MAX));
+    agendarSalvar(jid);
   }
 
   async function responder(jid, nome, texto, clienteSistema = null) {
+    await carregado;
     const h = historico.get(jid) || [];
     const quem = nome ? `[Contato: ${nome}] ` : "";
     const apresentados = memoria.dados.apresentados || (memoria.dados.apresentados = {});
@@ -253,7 +317,7 @@ function criarAtendente({ groq, empresa, memoria }) {
     const jaDisseQueVaiVerificar = minhasUltimas.some((t) => FRASE_DE_ESPERA.test(normalizar(t)));
     let lembrete = jaApresentou
       ? "(lembrete interno: você já se apresentou pra essa pessoa; NÃO se apresente de novo)"
-      : "(lembrete interno: primeira mensagem sua pra essa pessoa; cumprimente e se apresente uma vez como a assistente de IA do Keller)";
+      : "(lembrete interno: primeira mensagem sua pra essa pessoa; cumprimente e se apresente uma vez como a assistente de IA do Keller; aqui não use [SILENCIO])";
     if (minhasUltimas.length) {
       lembrete += `\n(o que você já mandou nessa conversa — NÃO repita nenhuma dessas frases nem o sentido delas: ${minhasUltimas.map((t) => `"${t}"`).join(" | ")})`;
     }
