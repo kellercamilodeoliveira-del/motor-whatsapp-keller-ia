@@ -236,6 +236,85 @@ function pendenciaDoCliente(jid) {
   return Object.keys(memoria.dados.pendencias).find((c) => memoria.dados.pendencias[c].jid === jid) || null;
 }
 
+// ---------- Clientes de sistemas e pedidos de alteração ----------
+// Só números cadastrados com #cliente podem pedir alteração em sistema.
+// O agente "Mecânico" (tarefa agendada do time) lê os pedidos em /time/alteracoes,
+// faz a mudança, manda link de teste e só publica depois da aprovação do cliente.
+function numeroDoCliente(jid, m) {
+  const sistemas = memoria?.dados?.sistemas || {};
+  const candidatos = [digitos(jid), digitos(m?.key?.senderPn), digitos(m?.key?.remoteJidAlt)].filter(Boolean);
+  return Object.keys(sistemas).find((n) => candidatos.some((c) => ultimos8(c) === ultimos8(n))) || null;
+}
+function alteracoesDoCliente(jid) {
+  return Object.entries(memoria.dados.alteracoes || {})
+    .filter(([, a]) => a.jid === jid)
+    .sort((a, b) => (b[1].atualizadoEm || 0) - (a[1].atualizadoEm || 0));
+}
+function clienteSistemaDe(jid, m) {
+  const numero = numeroDoCliente(jid, m);
+  if (!numero) return null;
+  const cs = { ...memoria.dados.sistemas[numero], numero };
+  const aberto = alteracoesDoCliente(jid).find(([, a]) => STATUS_ABERTOS.includes(a.status));
+  if (aberto) {
+    const [id, a] = aberto;
+    cs.pedidoAberto = { id, pedido: a.pedido, status: a.status, link: a.linkTeste || "" };
+    if (a.status === "em_teste") cs.testeAberto = cs.pedidoAberto;
+  }
+  return cs;
+}
+const STATUS_ABERTOS = ["novo", "em_andamento", "em_teste", "aguardando_cliente", "escalado"];
+function gerarIdAlteracao() {
+  return "ALT-" + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1296).toString(36).toUpperCase();
+}
+function registrarAlteracao(jid, nome, cs, pedido) {
+  const agora = Date.now();
+  // Já tem pedido em aberto (ajuste no teste, detalhe a mais, aceite de orçamento):
+  // entra no mesmo pedido e volta pra fila do Mecânico.
+  if (cs.pedidoAberto && memoria.dados.alteracoes[cs.pedidoAberto.id]) {
+    const a = memoria.dados.alteracoes[cs.pedidoAberto.id];
+    if (a.status !== "escalado") a.status = "novo";
+    a.historico.push({ em: agora, de: "cliente", texto: pedido });
+    a.atualizadoEm = agora;
+    memoria.salvar("alteracoes");
+    console.log(`🛠️ Complemento no pedido ${cs.pedidoAberto.id} (${cs.cliente}): ${pedido}`);
+    return cs.pedidoAberto.id;
+  }
+  const id = gerarIdAlteracao();
+  memoria.dados.alteracoes[id] = {
+    jid,
+    numero: cs.numero,
+    nome: nome || "",
+    cliente: cs.cliente,
+    sistema: cs.sistema,
+    pedido,
+    status: "novo", // novo | em_andamento | em_teste | aprovado | publicado | escalado | cancelado
+    linkTeste: "",
+    historico: [{ em: agora, de: "cliente", texto: pedido }],
+    criadoEm: agora,
+    atualizadoEm: agora,
+  };
+  // Guarda só os 100 mais recentes.
+  const ids = Object.keys(memoria.dados.alteracoes);
+  if (ids.length > 100) {
+    ids.sort((x, y) => memoria.dados.alteracoes[x].atualizadoEm - memoria.dados.alteracoes[y].atualizadoEm);
+    for (const velho of ids.slice(0, ids.length - 100)) delete memoria.dados.alteracoes[velho];
+  }
+  memoria.salvar("alteracoes");
+  console.log(`🛠️ Novo pedido de alteração ${id} (${cs.cliente} / ${cs.sistema}): ${pedido}`);
+  return id;
+}
+function aprovarTeste(cs) {
+  if (!cs.testeAberto) return null;
+  const a = memoria.dados.alteracoes[cs.testeAberto.id];
+  if (!a) return null;
+  a.status = "aprovado";
+  a.historico.push({ em: Date.now(), de: "cliente", texto: "Aprovou o teste." });
+  a.atualizadoEm = Date.now();
+  memoria.salvar("alteracoes");
+  console.log(`🛠️ Cliente aprovou o teste do pedido ${cs.testeAberto.id}.`);
+  return cs.testeAberto.id;
+}
+
 // Notificação que TOCA no celular (mensagem pra si mesmo no WhatsApp não toca).
 // Usa o app gratuito ntfy; o tópico é criado pelo comando #aviso.
 async function notificarCelular(titulo, texto) {
@@ -292,9 +371,10 @@ async function processarCliente(jid, nome, texto, m) {
     await sock.sendPresenceUpdate("composing", jid);
   } catch {}
 
+  const cs = clienteSistemaDe(jid, m);
   let r;
   try {
-    r = await atendente.responder(jid, nome, texto);
+    r = await atendente.responder(jid, nome, texto, cs);
   } catch (erro) {
     console.error("Erro da IA:", erro.message);
     await avisarKeller(
@@ -323,8 +403,14 @@ async function processarCliente(jid, nome, texto, m) {
     await sock.sendPresenceUpdate("paused", jid);
   } catch {}
 
+  if (cs && (r.alteracao || r.aprovado)) {
+    if (r.aprovado) aprovarTeste(cs);
+    if (r.alteracao) registrarAlteracao(jid, nome, cs, r.alteracao.pedido);
+    return; // pedido de sistema: quem cuida é o time, não precisa chamar o Keller
+  }
   if (r.chamar && r.chamar.pergunta) await criarPendencia(jid, nome, r.chamar.pergunta);
-  else if (PEDIDO_DE_ACAO.test(texto)) await criarPendencia(jid, nome, `Pediu: "${texto}"`);
+  // Cliente de sistema falando do sistema (ex.: "o campo da agenda") não pode virar pendência por engano.
+  else if (!cs && PEDIDO_DE_ACAO.test(texto)) await criarPendencia(jid, nome, `Pediu: "${texto}"`);
 }
 
 // Coisas que a assistente não consegue fazer sozinha: se a pessoa pedir e a IA
@@ -332,7 +418,7 @@ async function processarCliente(jid, nome, texto, m) {
 const PEDIDO_DE_ACAO =
   /\b(alarme|despertador|lembrete|lembra (ele|o keller)|agenda|agendar|marca(r)? (um|uma|o|a)? ?hor[aá]rio|pix|pagar|pagamento|transfer|encomend|comprar|reserva|buscar|busca (eu|a gente)|leva(r)? |traz(er)? |confirma)/i;
 
-async function criarPendencia(jid, nome, pergunta) {
+async function criarPendencia(jid, nome, pergunta, alteracaoId = null) {
   const existente = pendenciaDoCliente(jid);
   let codigo = existente;
   if (existente) {
@@ -343,12 +429,18 @@ async function criarPendencia(jid, nome, pergunta) {
     memoria.dados.pendencias[codigo] = { jid, nome: nome || "", pergunta, criadaEm: Date.now(), alertaId: null };
   }
   const p = memoria.dados.pendencias[codigo];
+  if (alteracaoId) p.alteracaoId = alteracaoId;
   const alerta = await avisarKeller(
-    `❓ *Pergunta de cliente* (#${codigo})\n` +
-      `👤 ${p.nome || "Cliente"} — ${numeroBonito(jid)}\n\n` +
-      `${p.pergunta}\n\n` +
-      `Eu disse que ia confirmar com você. *Arraste esta mensagem pro lado e escreva a resposta*: eu mando pro cliente e guardo pra próxima vez. ` +
-      `Se preferir, responda direto na conversa dele.`
+    p.alteracaoId
+      ? `🛠️ *O time precisa de você* (#${codigo})\n` +
+          `👤 ${p.nome || "Cliente"} — ${numeroBonito(jid)}\n\n` +
+          `${p.pergunta}\n\n` +
+          `*Arraste esta mensagem pro lado e responda* (ex.: "pode fazer", "cobra R$ 300", "não faz"). O time segue a partir da sua resposta e fala com o cliente.`
+      : `❓ *Pergunta de cliente* (#${codigo})\n` +
+          `👤 ${p.nome || "Cliente"} — ${numeroBonito(jid)}\n\n` +
+          `${p.pergunta}\n\n` +
+          `Eu disse que ia confirmar com você. *Arraste esta mensagem pro lado e escreva a resposta*: eu mando pro cliente e guardo pra próxima vez. ` +
+          `Se preferir, responda direto na conversa dele.`
   );
   if (alerta?.key?.id) p.alertaId = alerta.key.id;
   memoria.salvar("pendencias");
@@ -374,6 +466,17 @@ async function resolverPendencia(codigo, resposta, origem) {
   }
   delete memoria.dados.pendencias[codigo];
   memoria.salvar("pendencias");
+  if (p.alteracaoId && memoria.dados.alteracoes[p.alteracaoId]) {
+    // Resposta do Keller sobre um pedido de alteração: volta pro Mecânico com a decisão dele.
+    const a = memoria.dados.alteracoes[p.alteracaoId];
+    a.historico.push({ em: Date.now(), de: "keller", texto: resposta });
+    a.status = "novo";
+    a.atualizadoEm = Date.now();
+    memoria.salvar("alteracoes");
+    // Não repassa direto pro cliente: o Mecânico lê a decisão e conversa com ele.
+    await avisarKeller(`✅ Recebi sua decisão sobre o pedido ${p.alteracaoId}. O time continua daqui e fala com ${p.nome || "o cliente"}.`);
+    return;
+  }
   guardarConhecimento(p.pergunta, resposta);
 
   if (origem === "conversa") {
@@ -406,15 +509,20 @@ const AJUDA =
   "• #status → o que está pendente\n" +
   "• #aviso → liga a notificação que toca no celular quando eu precisar de você\n" +
   "• #aviso desligar → desliga essa notificação\n" +
-  "• #aprendido → tudo o que você já ensinou";
+  "• #aprendido → tudo o que você já ensinou\n\n" +
+  "🛠️ *Clientes de sistemas* (o time cuida das alterações):\n" +
+  "• #cliente 14999999999 | Empresa | Sistema → cadastra quem pode pedir alteração\n" +
+  "• #cliente remover 14999999999 → tira do cadastro\n" +
+  "• #clientes → lista os cadastrados\n" +
+  "• #pedidos → pedidos de alteração em aberto";
 
 // Avisos que o próprio motor manda na conversa do Keller. Se um deles voltar
 // como "mensagem do Keller" (eco depois de reinício/reenvio), não pode virar resposta pro cliente.
 function pareceAvisoDoMotor(texto) {
   const t = String(texto || "").trim();
   return (
-    /^(❓|✅|📋|📚|🔔|🔕|⚠️|🤖|⏸️|▶️|🗑️)/u.test(t) ||
-    /Pergunta de cliente|Arraste esta mensagem|Respondi .* e guardei|Comandos do atendente/i.test(t)
+    /^(❓|✅|📋|📚|🔔|🔕|⚠️|🤖|⏸️|▶️|🗑️|🛠️)/u.test(t) ||
+    /Pergunta de cliente|O time precisa de você|Arraste esta mensagem|Respondi .* e guardei|Comandos do atendente/i.test(t)
   );
 }
 
@@ -502,6 +610,34 @@ async function comandoDoKeller(m, texto) {
             "Pronto: toda vez que alguém pedir algo que só você resolve, seu celular apita. Mandei um teste agora. Não compartilhe esse nome de tópico."
         );
         return notificarCelular("Teste da assistente", "Se apareceu, a notificação está funcionando!");
+      }
+      case "cliente": {
+        if (/^remover\b/i.test(arg)) {
+          const n = arg.replace(/\D/g, "");
+          const achado = Object.keys(memoria.dados.sistemas).find((x) => ultimos8(x) === ultimos8(n));
+          if (!achado) return avisarKeller("Não achei esse número no cadastro. Mande #clientes pra ver a lista.");
+          delete memoria.dados.sistemas[achado];
+          memoria.salvar("sistemas");
+          return avisarKeller(`🗑️ Tirei o ${achado} do cadastro de clientes de sistema.`);
+        }
+        const [num, cliente, sistema, obs] = arg.split("|").map((x) => (x || "").trim());
+        const n = (num || "").replace(/\D/g, "");
+        if (n.length < 10 || !cliente || !sistema)
+          return avisarKeller("Escreva assim: #cliente 14999999999 | Nome da empresa | Nome do sistema");
+        memoria.dados.sistemas[n] = { cliente, sistema, ...(obs ? { obs } : {}) };
+        memoria.salvar("sistemas");
+        return avisarKeller(`🛠️ Cadastrado: ${n} (${cliente}) pode pedir alterações no ${sistema}. O time cuida e só te chama no que não resolver.`);
+      }
+      case "clientes": {
+        const lista = Object.entries(memoria.dados.sistemas).map(([n, c]) => `• ${n} — ${c.cliente} (${c.sistema})`);
+        return avisarKeller(lista.length ? `🛠️ Clientes de sistema:\n${lista.join("\n")}` : "🛠️ Nenhum cliente de sistema cadastrado ainda.");
+      }
+      case "pedidos": {
+        const nomes = { novo: "na fila", em_andamento: "sendo feito", em_teste: "esperando o cliente aprovar", aprovado: "aprovado, vai pro ar", escalado: "esperando você" };
+        const abertos = Object.entries(memoria.dados.alteracoes)
+          .filter(([, a]) => nomes[a.status])
+          .map(([id, a]) => `• ${id} ${a.cliente}: ${a.pedido} — ${nomes[a.status]}`);
+        return avisarKeller(abertos.length ? `🛠️ Pedidos de alteração em aberto:\n${abertos.join("\n")}` : "🛠️ Nenhum pedido de alteração em aberto.");
       }
       case "desligar":
       case "pausar":
@@ -724,6 +860,64 @@ app.get("/status", (req, res) => {
 });
 
 // Página simples com os horários marcados (usada pelos agentes de agendamento).
+// ---------- Time de agentes (Mecânico) ----------
+// Protegido por uma chave do time; aqui fica só o "resumo" (hash) dela, nunca a chave.
+const HASH_CHAVE_TIME = "c87535395d8de249f44684a823cdd50c68980073734a8cf26e6d36c7c7cff5c7";
+function chaveDoTimeOk(req) {
+  const chave = String(req.headers["x-time-key"] || "");
+  if (!chave) return false;
+  const hash = require("crypto").createHash("sha256").update(chave).digest("hex");
+  return hash === HASH_CHAVE_TIME;
+}
+const STATUS_VALIDOS = ["novo", "em_andamento", "em_teste", "aguardando_cliente", "aprovado", "publicado", "escalado", "cancelado"];
+
+app.get("/time/alteracoes", (req, res) => {
+  if (!chaveDoTimeOk(req)) return res.status(401).json({ erro: "Chave do time inválida." });
+  if (!memoria) return res.status(503).json({ erro: "Motor ainda iniciando." });
+  const filtro = req.query.status ? String(req.query.status).split(",") : null;
+  const lista = Object.entries(memoria.dados.alteracoes)
+    .filter(([, a]) => !filtro || filtro.includes(a.status))
+    .map(([id, a]) => ({ id, ...a, jid: undefined }))
+    .sort((x, y) => x.criadoEm - y.criadoEm);
+  res.json({ alteracoes: lista, whatsapp: statusConexao });
+});
+
+app.post("/time/alteracoes/:id", async (req, res) => {
+  if (!chaveDoTimeOk(req)) return res.status(401).json({ erro: "Chave do time inválida." });
+  if (!memoria) return res.status(503).json({ erro: "Motor ainda iniciando." });
+  const id = req.params.id;
+  const a = memoria.dados.alteracoes[id];
+  if (!a) return res.status(404).json({ erro: "Pedido não encontrado." });
+  const { status, linkTeste, nota, mensagemCliente, escalarKeller } = req.body || {};
+  if (status && !STATUS_VALIDOS.includes(status)) return res.status(400).json({ erro: `Status inválido. Use: ${STATUS_VALIDOS.join(", ")}` });
+  if ((mensagemCliente || escalarKeller) && (statusConexao !== "conectado" || !sock))
+    return res.status(503).json({ erro: "WhatsApp não está conectado agora; tente de novo depois." });
+
+  const agora = Date.now();
+  try {
+    if (mensagemCliente) {
+      await enviar(a.jid, { text: String(mensagemCliente) });
+      atendente?.anotarFalaDoTime(a.jid, String(mensagemCliente));
+      a.historico.push({ em: agora, de: "time→cliente", texto: String(mensagemCliente) });
+    }
+    if (escalarKeller) {
+      await criarPendencia(a.jid, a.nome, `[Pedido ${id} — ${a.cliente} / ${a.sistema}] ${escalarKeller}`, id);
+      a.historico.push({ em: agora, de: "time→keller", texto: String(escalarKeller) });
+    }
+    if (nota) a.historico.push({ em: agora, de: "time", texto: String(nota) });
+    if (linkTeste !== undefined) a.linkTeste = String(linkTeste);
+    if (status) a.status = status;
+    else if (escalarKeller) a.status = "escalado";
+    a.historico = a.historico.slice(-40);
+    a.atualizadoEm = agora;
+    memoria.salvar("alteracoes");
+    res.json({ ok: true, id, status: a.status });
+  } catch (erro) {
+    console.error("Erro ao atualizar pedido de alteração:", erro);
+    res.status(500).json({ erro: "Falha ao atualizar o pedido.", detalhe: erro.message });
+  }
+});
+
 app.get("/agenda", async (req, res) => {
   try {
     const numeroEmpresa = digitos(sock?.user?.id);

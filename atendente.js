@@ -24,7 +24,33 @@ function dataHoje() {
   });
 }
 
-function montarInstrucoes(empresa, conhecimento, jaApresentou) {
+// Bloco extra pra quem é cliente de um sistema do Keller (cadastrado com #cliente).
+// Esses clientes podem pedir alterações: o "time" (agente Mecânico) faz a mudança,
+// manda um link de teste e só publica depois que o cliente aprovar.
+function instrucoesClienteSistema(cs) {
+  if (!cs) return "";
+  let teste = "";
+  if (cs.testeAberto) {
+    teste = `\nAGORA existe uma versão de TESTE esperando a aprovação dessa pessoa: "${cs.testeAberto.pedido}"${cs.testeAberto.link ? ` (link: ${cs.testeAberto.link})` : ""}.
+- Se ela aprovar ("ok", "pode publicar", "ficou bom", "aprovado", "pode subir"), responda curto confirmando que vai colocar no ar e escreva no final, numa linha separada: [APROVADO]{}[/APROVADO]
+- Se ela pedir correção nesse teste, responda que vai ajustar e mandar de novo, e escreva [ALTERACAO]{"pedido":"ajuste no teste: o que ela quer mudar, completo"}[/ALTERACAO]`;
+  } else if (cs.pedidoAberto) {
+    teste = `\nJá existe um pedido dessa pessoa em andamento: "${cs.pedidoAberto.pedido}".
+- Se ela mandar algo sobre esse pedido (detalhe novo, aceitar ou recusar um valor que você passou, desistir), responda curto e escreva [ALTERACAO]{"pedido":"o que ela disse sobre o pedido, completo"}[/ALTERACAO]
+- Se perguntar como está, diga que está sendo preparado e que você manda o link de teste assim que ficar pronto. Não invente prazo.`;
+  }
+  return `
+
+ESSA PESSOA É CLIENTE DE UM SISTEMA
+- Empresa: ${cs.cliente}. Sistema que ela usa: ${cs.sistema}.${cs.obs ? ` Observação: ${cs.obs}.` : ""}
+- Se ela pedir alteração, correção, ajuste, campo novo, item novo, mudança de texto ou de layout NESSE sistema, ou relatar um erro nele: você PODE e DEVE aceitar o pedido. Confirme o que entendeu em 1 frase, diga que vai preparar e mandar um link de teste pra ela conferir antes de ir pro ar. Não prometa prazo nem preço.
+- Se o pedido estiver vago (ex.: "muda o checklist"), pergunte só o que falta pra entender (qual tela, qual item, como deve ficar) ANTES de registrar.
+- Quando o pedido estiver claro, escreva no final, numa linha separada (a pessoa nunca vê):
+[ALTERACAO]{"pedido":"descrição completa e clara do que mudar, com todos os detalhes que ela deu"}[/ALTERACAO]
+- Nesses casos NÃO use [CHAMAR_KELLER].${teste}`;
+}
+
+function montarInstrucoes(empresa, conhecimento, jaApresentou, clienteSistema) {
   const servicos = (empresa.servicos || [])
     .map((s) => `- ${s.nome}${s.descricao ? `: ${s.descricao}` : ""}${s.preco ? ` (valor: ${s.preco})` : ""}`)
     .join("\n");
@@ -90,12 +116,31 @@ A pessoa nunca vê essa linha.
 REGRA DE OURO: a conversa é sua do começo ao fim. A pessoa NUNCA pode perceber que você consulta alguém ou que o Keller está acompanhando a conversa.
 - PROIBIDO dizer: "vou ver com o Keller", "vou conferir com o Keller", "vou perguntar pro Keller", "vou confirmar com o Keller", "já passei pro Keller", "vou avisar o Keller", "falei com o Keller", "o Keller disse", "o Keller vai te responder" ou qualquer variação.
 - Quando não souber, diga só que vai verificar e já retorna, sem citar ninguém. Se a pessoa perguntar se vai demorar, responda com gentileza ("Já já te retorno!"), sem citar ninguém.
-- Assunto de saúde, remédio ou dose: nunca dê orientação nem informação por conta própria; responda de forma neutra e chame o Keller.`;
+- Assunto de saúde, remédio ou dose: nunca dê orientação nem informação por conta própria; responda de forma neutra e chame o Keller.${instrucoesClienteSistema(clienteSistema)}`;
+}
+
+function extrairJsonMarca(texto, nome) {
+  const re = new RegExp(`\\[${nome}\\]([\\s\\S]*?)(\\[\\/${nome}\\]|$)`, "i");
+  const m = texto.match(re);
+  if (!m) return { texto, valor: null };
+  let valor;
+  try {
+    valor = JSON.parse(m[1].trim() || "{}");
+  } catch {
+    valor = { pedido: m[1].trim() };
+  }
+  return { texto: texto.replace(m[0], ""), valor };
 }
 
 function extrairMarcas(bruto) {
   let texto = bruto || "";
   if (/\[SILENCIO\]/i.test(texto)) return { silencio: true, texto: "", chamar: null };
+  const alt = extrairJsonMarca(texto, "ALTERACAO");
+  texto = alt.texto;
+  const apr = extrairJsonMarca(texto, "APROVADO");
+  texto = apr.texto;
+  const alteracao = alt.valor && alt.valor.pedido ? alt.valor : null;
+  const aprovado = !!apr.valor;
   let chamar = null;
   const m = texto.match(/\[CHAMAR_KELLER\]([\s\S]*?)\[\/CHAMAR_KELLER\]/i);
   if (m) {
@@ -116,7 +161,7 @@ function extrairMarcas(bruto) {
     }
   }
   texto = texto.replace(/\[\/?[A-Z_]+\]/g, "").trim();
-  return { silencio: false, texto, chamar };
+  return { silencio: false, texto, chamar, alteracao, aprovado };
 }
 
 
@@ -198,7 +243,7 @@ function criarAtendente({ groq, empresa, memoria }) {
     historico.set(jid, h.slice(-HISTORICO_MAX));
   }
 
-  async function responder(jid, nome, texto) {
+  async function responder(jid, nome, texto, clienteSistema = null) {
     const h = historico.get(jid) || [];
     const quem = nome ? `[Contato: ${nome}] ` : "";
     const apresentados = memoria.dados.apresentados || (memoria.dados.apresentados = {});
@@ -217,7 +262,7 @@ function criarAtendente({ groq, empresa, memoria }) {
         "\n(você JÁ disse que ia verificar o pedido dessa pessoa. NÃO diga de novo que vai verificar/retornar. Só reaja ao que ela mandou agora, bem curto e natural: ex. \"Beleza 👍\", \"Fechado!\", \"Tá certo!\". Se ela mandou informação nova (número, horário, quantidade), inclua essa informação no [CHAMAR_KELLER].)";
     }
     const mensagens = [
-      { role: "system", content: montarInstrucoes(empresa, memoria.dados.conhecimento, jaApresentou) },
+      { role: "system", content: montarInstrucoes(empresa, memoria.dados.conhecimento, jaApresentou, clienteSistema) },
       ...h,
       {
         role: "user",
@@ -252,6 +297,8 @@ function criarAtendente({ groq, empresa, memoria }) {
             )
           );
           if (outra.chamar && !r.chamar) r.chamar = outra.chamar;
+          if (outra.alteracao && !r.alteracao) r.alteracao = outra.alteracao;
+          if (outra.aprovado) r.aprovado = true;
           outra.texto = semConsultaAoKeller(outra.texto || "", !!r.chamar);
           const aindaRepete =
             !outra.texto ||
@@ -311,6 +358,12 @@ function criarAtendente({ groq, empresa, memoria }) {
     lembrar(jid, "assistant", `(Keller respondeu pessoalmente) ${texto}`);
   }
 
+  // Mensagem que o time (agente Mecânico) mandou pelo motor: entra no histórico
+  // como fala da própria assistente, pra conversa continuar natural.
+  function anotarFalaDoTime(jid, texto) {
+    lembrar(jid, "assistant", texto);
+  }
+
   async function transcrever(buffer) {
     const { toFile } = require("groq-sdk");
     let ultimoErro;
@@ -326,7 +379,7 @@ function criarAtendente({ groq, empresa, memoria }) {
     throw ultimoErro || new Error("Não consegui transcrever o áudio.");
   }
 
-  return { responder, redigirResposta, anotarFalaDoKeller, transcrever };
+  return { responder, redigirResposta, anotarFalaDoKeller, anotarFalaDoTime, transcrever };
 }
 
 module.exports = { criarAtendente, extrairMarcas };

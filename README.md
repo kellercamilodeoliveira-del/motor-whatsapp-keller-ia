@@ -7,8 +7,9 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
 - **Responde sozinho** quem chama, 24h, com os dados de `empresas/keller-ia.json`
   e com tudo o que o Keller já ensinou. Entende áudio (transcreve) e responde no
   idioma do cliente.
-- **Chama o Keller quando não sabe**: diz ao cliente que vai confirmar e manda a
-  pergunta na conversa do Keller com ele mesmo ("Você"), com um código (#ABC).
+- **Chama o Keller quando não sabe**: diz ao cliente que vai verificar (sem nunca
+  citar o Keller) e manda a pergunta na conversa do Keller com ele mesmo ("Você"),
+  com um código (#ABC).
 - **Aprende**: o Keller responde arrastando a pergunta pro lado (ou escrevendo
   `#ABC resposta`, ou direto na conversa do cliente). O motor repassa ao cliente e
   guarda a resposta pra próximas vezes.
@@ -18,6 +19,21 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
 - **Comandos** (na conversa do Keller com ele mesmo): `#ajuda`, `#status`,
   `#aprendido`, `#ensinar pergunta | resposta`, `#esquecer pergunta`,
   `#ignorar número`, `#liberar número`, `#desligar`, `#ligar`.
+
+## Pedidos de alteração em sistemas (time de agentes)
+
+- Clientes cadastrados com `#cliente 14999999999 | Empresa | Sistema` podem pedir
+  alterações no sistema pelo WhatsApp. O atendente entende o pedido e registra.
+- O agente **Mecânico** (tarefa agendada) lê os pedidos em `GET /time/alteracoes`,
+  faz a mudança, publica uma versão de TESTE e manda o link pro cliente
+  (`POST /time/alteracoes/:id` com `mensagemCliente`, `linkTeste`, `status`).
+- O cliente aprova pelo WhatsApp → o pedido vira `aprovado` → o Mecânico publica
+  no app oficial. O app oficial nunca muda sem a aprovação do cliente.
+- O que não for simples (função nova, cobrança, dúvida) o Mecânico manda pro Keller
+  (`escalarKeller`). A resposta do Keller volta pro pedido, não direto pro cliente.
+- Essas rotas exigem o cabeçalho `x-time-key` (a chave fica só na tarefa do time;
+  no código fica só o hash dela).
+- Comandos: `#cliente`, `#cliente remover número`, `#clientes`, `#pedidos`.
 
 ## Plano grátis do Render
 
