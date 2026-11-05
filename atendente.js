@@ -29,7 +29,7 @@ function montarInstrucoes(empresa, conhecimento, jaApresentou) {
     .map((s) => `- ${s.nome}${s.descricao ? `: ${s.descricao}` : ""}${s.preco ? ` (valor: ${s.preco})` : ""}`)
     .join("\n");
   const aprendido = conhecimento.length
-    ? conhecimento.map((c) => `- Pergunta: ${c.p}\n  Resposta do Keller: ${c.r}`).join("\n")
+    ? conhecimento.map((c) => `- Pergunta: ${c.p}\n  Resposta certa: ${c.r}`).join("\n")
     : "(ainda nada)";
 
   const apresentacao = jaApresentou
@@ -49,7 +49,7 @@ ${apresentacao}
   Pessoa: "Opa" → Você: "Opa, tudo certo? Como você tá?"
   Pessoa: "Tudo bem e vc?" → Você: "Tudo ótimo por aqui, graças a Deus! E aí, quais as novidades?"
   Pessoa: "Nada demais, só passando pra dar um oi" → Você: "Que bom! Fico feliz que lembrou da gente 😊"
-- NÃO puxe assunto de negócio. Não pergunte sobre a empresa, o ramo, a cidade, os processos ou a necessidade da pessoa, e não ofereça serviços. Se a pessoa mandar link, vídeo, áudio ou figurinha, reaja com naturalidade (ex.: "Que legal, vou deixar aqui pro Keller ver!") sem analisar nem vender nada.
+- NÃO puxe assunto de negócio. Não pergunte sobre a empresa, o ramo, a cidade, os processos ou a necessidade da pessoa, e não ofereça serviços. Se a pessoa mandar link, vídeo, áudio ou figurinha, reaja com naturalidade (ex.: "Que legal!") sem analisar nem vender nada.
 - Só fale de serviços da ${empresa.nome_empresa} se a própria pessoa perguntar ou disser que quer um sistema/app/serviço. Aí sim use os dados abaixo.
 - Nunca repita frases ou ideias que você já mandou nessa conversa.
 - Responda no idioma em que a pessoa escreveu.
@@ -72,14 +72,19 @@ O QUE VOCÊ NÃO CONSEGUE FAZER (seja sincera)
 Você só manda mensagens nesta conversa. Você NÃO consegue: pôr alarme ou lembrete, mexer na agenda do Keller, fazer pix ou pagamento, comprar, encomendar, reservar, aceitar convite ou assumir qualquer compromisso no nome dele.
 - Nunca diga "anotado", "vou anotar", "vou colocar o alarme", "já agendei", "faço o pix" ou algo parecido.
 - Nunca aceite pedido, encomenda ou convite no lugar do Keller ("claro, quantos você quer?" é ERRADO). Quem decide é ele.
-- Quando pedirem uma coisa dessas, diga a verdade de forma simpática ("Isso eu não consigo fazer daqui, mas já passei pro Keller agora!") e SEMPRE chame o Keller (abaixo), incluindo na pergunta o pedido completo e qualquer horário ou prazo (ex.: "precisa encomendar até 8:40").
+- Quando pedirem uma coisa dessas, não confirme nada: responda de forma simpática e neutra ("Deixa eu verificar isso e já te retorno!") e SEMPRE chame o Keller (abaixo), incluindo na pergunta o pedido completo e qualquer horário ou prazo (ex.: "precisa encomendar até 8:40").
 
 QUANDO CHAMAR O KELLER
 ${empresa.quando_chamar_humano}
 Também chame quando não tiver certeza da resposta, quando a pergunta não estiver coberta acima, quando pedirem algo que só ele pode responder (vai vir?, pode buscar?, confirma tal coisa?) ou quando quiserem marcar conversa, reunião, visita ou demonstração (você não marca horário sozinha).
-Para chamar: responda à pessoa algo natural como "Vou ver com o Keller e já te falo!" e, NO FINAL da sua mensagem, numa linha separada, escreva exatamente:
+Para chamar: responda à pessoa algo natural e neutro, como "Boa pergunta! Vou verificar isso direitinho e já te retorno." ou "Deixa eu ver isso aqui e já te falo!", e, NO FINAL da sua mensagem, numa linha separada, escreva exatamente:
 [CHAMAR_KELLER]{"pergunta":"o que a pessoa quer saber, em uma frase clara, com o contexto necessário"}[/CHAMAR_KELLER]
-A pessoa nunca vê essa linha.`;
+A pessoa nunca vê essa linha.
+
+REGRA DE OURO: a conversa é sua do começo ao fim. A pessoa NUNCA pode perceber que você consulta alguém ou que o Keller está acompanhando a conversa.
+- PROIBIDO dizer: "vou ver com o Keller", "vou conferir com o Keller", "vou perguntar pro Keller", "vou confirmar com o Keller", "já passei pro Keller", "vou avisar o Keller", "falei com o Keller", "o Keller disse", "o Keller vai te responder" ou qualquer variação.
+- Quando não souber, diga só que vai verificar e já retorna, sem citar ninguém. Se a pessoa perguntar se vai demorar, responda com gentileza ("Já já te retorno!"), sem citar ninguém.
+- Assunto de saúde, remédio ou dose: nunca dê orientação nem informação por conta própria; responda de forma neutra e chame o Keller.`;
 }
 
 function extrairMarcas(bruto) {
@@ -106,6 +111,28 @@ function extrairMarcas(bruto) {
   }
   texto = texto.replace(/\[\/?[A-Z_]+\]/g, "").trim();
   return { silencio: false, texto, chamar };
+}
+
+
+// Garantia: tira da mensagem qualquer frase dizendo que vai consultar/falou com o Keller.
+const VERBO_CONSULTA = /(ver|vejo|conferir|confiro|confirmar|confirmo|perguntar|pergunto|checar|consultar|falar|falo|passar|passei|avisar|avisei|aviso|verificar|chamar|levar|encaminh|falei|conversei|perguntei|confirmei|consultei|disse|falou|respond|retorn|aguard|deixar|deixei|mandei|mandar)/i;
+function semConsultaAoKeller(texto, escalando = false) {
+  if (!texto || !/keller/i.test(texto)) return texto;
+  texto = texto.replace(/(^|[.!?]\s*)(falei|conversei|confirmei|verifiquei|perguntei)\s+(aqui\s+)?com\s+o\s+keller\s*[:,\-–]?\s*/gi, "$1Verifiquei aqui: ");
+  const frases = texto.match(/[^.!?\n]+[.!?]*\s*|\n+/g) || [texto];
+  let tirou = false;
+  const ficou = frases.filter((f) => {
+    if (/keller/i.test(f) && VERBO_CONSULTA.test(f) && !/assistente/i.test(f)) {
+      tirou = true;
+      return false;
+    }
+    return true;
+  });
+  let limpo = ficou.join("").replace(/\s+([.!?,])/g, "$1").trim();
+  if (tirou && escalando && !/verific|já te retorno|já te falo/i.test(limpo)) {
+    limpo = "Vou verificar isso e já te retorno!" + (limpo ? " " + limpo : "");
+  }
+  return limpo;
 }
 
 function criarAtendente({ groq, empresa, memoria }) {
@@ -160,6 +187,7 @@ function criarAtendente({ groq, empresa, memoria }) {
     ];
     const bruto = await chat(mensagens);
     const r = extrairMarcas(bruto);
+    if (r.texto) r.texto = semConsultaAoKeller(r.texto, !!r.chamar);
     // Garantia: na primeira mensagem, se a IA esqueceu de se apresentar, completa.
     if (!jaApresentou && !r.silencio && r.texto && !/assistente/i.test(r.texto)) {
       r.texto = `${r.texto} Aqui é a assistente de IA do Keller 😊`;
@@ -185,7 +213,7 @@ function criarAtendente({ groq, empresa, memoria }) {
         {
           role: "system",
           content:
-            "Você é a assistente pessoal do Keller no WhatsApp e já está conversando com essa pessoa (não se apresente de novo). O Keller respondeu uma dúvida dela. Escreva a mensagem passando EXATAMENTE a informação do Keller, sem acrescentar nem mudar nada (valores, prazos e condições iguais). Curta, natural, no idioma da conversa, começando com algo como \"Falei com o Keller:\". Não use marcações.",
+            "Você é a assistente pessoal do Keller no WhatsApp e já está conversando com essa pessoa (não se apresente de novo). O Keller respondeu uma dúvida dela. Escreva a mensagem passando EXATAMENTE essa informação, sem acrescentar nem mudar nada (valores, prazos e condições iguais), como se VOCÊ mesma tivesse verificado. Curta, natural, no idioma da conversa, começando com algo como \"Verifiquei aqui:\" ou \"Prontinho:\". NUNCA cite o Keller, nunca diga que falou, perguntou ou confirmou com alguém. Não use marcações.",
         },
         {
           role: "user",
@@ -194,7 +222,7 @@ function criarAtendente({ groq, empresa, memoria }) {
       ],
       { temperatura: 0.2, maxTokens: 300 }
     );
-    const limpo = texto.replace(/\[\/?[A-Z_]+\]/g, "").trim();
+    const limpo = semConsultaAoKeller(texto.replace(/\[\/?[A-Z_]+\]/g, "").trim()) || respostaKeller;
     lembrar(jid, "assistant", limpo);
     return limpo;
   }
@@ -222,3 +250,4 @@ function criarAtendente({ groq, empresa, memoria }) {
 }
 
 module.exports = { criarAtendente, extrairMarcas };
+
