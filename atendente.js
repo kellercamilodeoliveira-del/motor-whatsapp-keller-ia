@@ -141,6 +141,31 @@ function semConsultaAoKeller(texto, escalando = false) {
   return limpo;
 }
 
+// ---------- Anti-repetição ----------
+function normalizar(t) {
+  return String(t || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+function parecida(a, b) {
+  const na = normalizar(a);
+  const nb = normalizar(b);
+  if (!na || !nb) return false;
+  if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+  const A = new Set(na.split(" "));
+  const B = new Set(nb.split(" "));
+  let comum = 0;
+  for (const w of A) if (B.has(w)) comum++;
+  return comum / Math.max(A.size, B.size) >= 0.6;
+}
+// Frases de "vou verificar": a pessoa já ouviu uma vez, não precisa ouvir de novo.
+const FRASE_DE_ESPERA = /(verific|ja te retorno|ja te falo|ja ja|deixa eu ver|vou ver|te retorno|um instante|so um minuto|aguarda)/;
+const RESPOSTAS_CURTAS = ["Beleza 👍", "Fechado!", "Tá certo!", "Pode deixar.", "Combinado!", "Show!", "Tranquilo!", "Certo 👍"];
+
 function criarAtendente({ groq, empresa, memoria }) {
   const historico = new Map(); // jid -> [{role, content}]
 
@@ -178,6 +203,19 @@ function criarAtendente({ groq, empresa, memoria }) {
     const quem = nome ? `[Contato: ${nome}] ` : "";
     const apresentados = memoria.dados.apresentados || (memoria.dados.apresentados = {});
     const jaApresentou = !!apresentados[jid] || h.some((m) => m.role === "assistant");
+    const minhasUltimas = h.filter((m) => m.role === "assistant").slice(-5).map((m) => m.content);
+    const esperandoResposta = Object.values(memoria.dados.pendencias || {}).some((p) => p.jid === jid);
+    const jaDisseQueVaiVerificar = minhasUltimas.some((t) => FRASE_DE_ESPERA.test(normalizar(t)));
+    let lembrete = jaApresentou
+      ? "(lembrete interno: você já se apresentou pra essa pessoa; NÃO se apresente de novo)"
+      : "(lembrete interno: primeira mensagem sua pra essa pessoa; cumprimente e se apresente uma vez como a assistente de IA do Keller)";
+    if (minhasUltimas.length) {
+      lembrete += `\n(o que você já mandou nessa conversa — NÃO repita nenhuma dessas frases nem o sentido delas: ${minhasUltimas.map((t) => `"${t}"`).join(" | ")})`;
+    }
+    if (esperandoResposta && jaDisseQueVaiVerificar) {
+      lembrete +=
+        "\n(você JÁ disse que ia verificar o pedido dessa pessoa. NÃO diga de novo que vai verificar/retornar. Só reaja ao que ela mandou agora, bem curto e natural: ex. \"Beleza 👍\", \"Fechado!\", \"Tá certo!\". Se ela mandou informação nova (número, horário, quantidade), inclua essa informação no [CHAMAR_KELLER].)";
+    }
     const mensagens = [
       { role: "system", content: montarInstrucoes(empresa, memoria.dados.conhecimento, jaApresentou) },
       ...h,
@@ -186,14 +224,50 @@ function criarAtendente({ groq, empresa, memoria }) {
         content:
           quem +
           texto +
-          (jaApresentou
-            ? "\n\n(lembrete interno: você já se apresentou pra essa pessoa; NÃO se apresente de novo)"
-            : "\n\n(lembrete interno: primeira mensagem sua pra essa pessoa; cumprimente e se apresente uma vez como a assistente de IA do Keller)"),
+          "\n\n" +
+          lembrete,
       },
     ];
     const bruto = await chat(mensagens);
     const r = extrairMarcas(bruto);
     if (r.texto) r.texto = semConsultaAoKeller(r.texto, !!r.chamar);
+    // Garantia: não repetir o que já disse (nem repetir "vou verificar").
+    if (r.texto) {
+      const repetiu = minhasUltimas.some((t) => parecida(t, r.texto));
+      const esperaDeNovo = jaDisseQueVaiVerificar && FRASE_DE_ESPERA.test(normalizar(r.texto));
+      if (repetiu || esperaDeNovo) {
+        try {
+          const outra = extrairMarcas(
+            await chat(
+              [
+                ...mensagens,
+                { role: "assistant", content: r.texto },
+                {
+                  role: "user",
+                  content:
+                    "(interno) Você repetiu algo que já tinha dito. Reescreva a resposta com outras palavras, mais curta e natural, sem dizer de novo que vai verificar ou retornar. Mantenha a linha [CHAMAR_KELLER] se precisar.",
+                },
+              ],
+              { temperatura: 0.9 }
+            )
+          );
+          if (outra.chamar && !r.chamar) r.chamar = outra.chamar;
+          outra.texto = semConsultaAoKeller(outra.texto || "", !!r.chamar);
+          const aindaRepete =
+            !outra.texto ||
+            minhasUltimas.some((t) => parecida(t, outra.texto)) ||
+            (jaDisseQueVaiVerificar && FRASE_DE_ESPERA.test(normalizar(outra.texto)));
+          r.texto = aindaRepete ? null : outra.texto;
+        } catch {
+          r.texto = null;
+        }
+        if (!r.texto) {
+          const livres = RESPOSTAS_CURTAS.filter((f) => !minhasUltimas.some((t) => parecida(t, f)));
+          const lista = livres.length ? livres : RESPOSTAS_CURTAS;
+          r.texto = lista[Math.floor(Math.random() * lista.length)];
+        }
+      }
+    }
     // Garantia: na primeira mensagem, se a IA esqueceu de se apresentar, completa.
     if (!jaApresentou && !r.silencio && r.texto && !/assistente/i.test(r.texto)) {
       r.texto = `${r.texto} Aqui é a assistente de IA do Keller 😊`;
