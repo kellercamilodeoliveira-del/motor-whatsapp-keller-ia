@@ -408,6 +408,16 @@ const AJUDA =
   "• #aviso desligar → desliga essa notificação\n" +
   "• #aprendido → tudo o que você já ensinou";
 
+// Avisos que o próprio motor manda na conversa do Keller. Se um deles voltar
+// como "mensagem do Keller" (eco depois de reinício/reenvio), não pode virar resposta pro cliente.
+function pareceAvisoDoMotor(texto) {
+  const t = String(texto || "").trim();
+  return (
+    /^(❓|✅|📋|📚|🔔|🔕|⚠️|🤖|⏸️|▶️|🗑️)/u.test(t) ||
+    /Pergunta de cliente|Arraste esta mensagem|Respondi .* e guardei|Comandos do atendente/i.test(t)
+  );
+}
+
 async function comandoDoKeller(m, texto) {
   const t = texto.trim();
   const pend = memoria.dados.pendencias;
@@ -510,7 +520,11 @@ async function comandoDoKeller(m, texto) {
 
   // 3) Texto solto: se só tem uma pergunta pendente (de menos de 12h), vale como resposta dela.
   const codigos = Object.keys(pend);
-  if (codigos.length === 1 && Date.now() - (pend[codigos[0]].criadaEm || 0) < 12 * 60 * 60 * 1000) {
+  if (
+    codigos.length === 1 &&
+    !pareceAvisoDoMotor(t) &&
+    Date.now() - (pend[codigos[0]].criadaEm || 0) < 12 * 60 * 60 * 1000
+  ) {
     return resolverPendencia(codigos[0], t, "chat");
   }
 }
@@ -537,8 +551,10 @@ async function tratarMensagem(m, type) {
   const naMinhaConversa = eu.has(jid);
 
   if (m.key.fromMe) {
-    if (enviadasPeloMotor.has(m.key.id)) return; // foi o próprio motor
+    // Foi o próprio motor (inclusive mensagens de antes de um reinício, salvas no Firestore).
+    if (enviadasPeloMotor.has(m.key.id) || memoria?.dados?.enviadas?.[m.key.id]) return;
     const texto = textoDa(m);
+    if (naMinhaConversa && pareceAvisoDoMotor(texto)) return; // eco de um aviso do motor: nunca é resposta do Keller
     if (naMinhaConversa) {
       if (texto && memoria) await comandoDoKeller(m, texto);
       return;
