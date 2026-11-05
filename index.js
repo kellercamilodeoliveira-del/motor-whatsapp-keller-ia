@@ -101,10 +101,35 @@ function lembrarEnviada(id) {
 // (getMessage). Sem isso a mensagem fica "Aguardando mensagem" pra sempre.
 const MAX_GUARDADAS = 500;
 const mensagensGuardadas = new Map(); // id -> conteúdo (proto.IMessage)
+const MAX_SALVAS = 150; // quantas mensagens de texto ficam salvas no Firestore
 function guardarMensagem(id, conteudo) {
   if (!id || !conteudo) return;
   mensagensGuardadas.set(id, conteudo);
   if (mensagensGuardadas.size > MAX_GUARDADAS) mensagensGuardadas.delete(mensagensGuardadas.keys().next().value);
+  // Texto também vai pro Firestore: se o Render reiniciar antes do celular pedir
+  // o reenvio, a mensagem ainda pode ser reenviada (senão fica "Aguardando mensagem").
+  const texto = conteudo.conversation || conteudo.extendedTextMessage?.text;
+  if (texto && memoria) {
+    const salvas = memoria.dados.enviadas || (memoria.dados.enviadas = {});
+    salvas[id] = { t: texto, em: Date.now() };
+    const ids = Object.keys(salvas);
+    if (ids.length > MAX_SALVAS) {
+      ids.sort((a, b) => salvas[a].em - salvas[b].em);
+      for (const velho of ids.slice(0, ids.length - MAX_SALVAS)) delete salvas[velho];
+    }
+    memoria.salvar("enviadas");
+  }
+}
+function mensagemGuardada(id) {
+  const m = mensagensGuardadas.get(id);
+  if (m) return m;
+  const salva = memoria?.dados?.enviadas?.[id];
+  if (salva) {
+    console.log(`🔁 Reenviando mensagem ${id} (recuperada do Firestore).`);
+    return { conversation: salva.t };
+  }
+  console.log(`⚠️ Celular pediu reenvio da mensagem ${id}, mas ela não está guardada.`);
+  return undefined;
 }
 
 // Contador de tentativas de reenvio (o Baileys usa pra não reenviar em loop).
@@ -585,7 +610,7 @@ async function iniciar() {
     markOnlineOnConnect: false, // não "rouba" as notificações do celular do Keller
     syncFullHistory: false,
     msgRetryCounterCache: contadorReenvio,
-    getMessage: async (key) => mensagensGuardadas.get(key.id),
+    getMessage: async (key) => mensagemGuardada(key.id),
   });
 
   sock.ev.on("creds.update", () => sessao.saveCreds().catch((e) => console.error("Erro ao salvar login:", e.message)));

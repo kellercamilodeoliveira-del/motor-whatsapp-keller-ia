@@ -6,7 +6,7 @@
 const fsdb = require("./firestore");
 
 const DOC = process.env.MEMORIA_DOC || "config/atendenteMemoria";
-const CAMPOS = ["conhecimento", "pendencias", "pausas", "ajustes", "apresentados"];
+const CAMPOS = ["conhecimento", "pendencias", "pausas", "ajustes", "apresentados", "enviadas"];
 
 async function carregarMemoria(cofre) {
   const dados = {
@@ -15,6 +15,7 @@ async function carregarMemoria(cofre) {
     pausas: {}, // jid -> ate (ms)
     ajustes: { ativo: true, ignorar: [] }, // ignorar = só dígitos do número
     apresentados: {}, // jid -> quando a assistente se apresentou (ms); só se apresenta 1 vez por pessoa
+    enviadas: {}, // id -> conteúdo das últimas mensagens de texto enviadas (pra reenviar se o celular pedir, mesmo após reinício)
   };
 
   if (cofre) {
