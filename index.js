@@ -882,6 +882,29 @@ app.get("/time/alteracoes", (req, res) => {
   res.json({ alteracoes: lista, whatsapp: statusConexao });
 });
 
+// Cadastro de clientes de sistema pelo time (o mesmo que o comando #cliente).
+app.get("/time/clientes", (req, res) => {
+  if (!chaveDoTimeOk(req)) return res.status(401).json({ erro: "Chave do time inválida." });
+  if (!memoria) return res.status(503).json({ erro: "Motor ainda iniciando." });
+  res.json({ clientes: memoria.dados.sistemas });
+});
+app.post("/time/clientes", (req, res) => {
+  if (!chaveDoTimeOk(req)) return res.status(401).json({ erro: "Chave do time inválida." });
+  if (!memoria) return res.status(503).json({ erro: "Motor ainda iniciando." });
+  const { numero, cliente, sistema, obs, remover } = req.body || {};
+  let n = String(numero || "").replace(/\D/g, "");
+  if (n.length >= 10 && n.length <= 11) n = "55" + n;
+  if (n.length < 12) return res.status(400).json({ erro: "Número inválido (use DDD + número)." });
+  for (const x of Object.keys(memoria.dados.sistemas)) if (ultimos8(x) === ultimos8(n) && x !== n) delete memoria.dados.sistemas[x];
+  if (remover) delete memoria.dados.sistemas[n];
+  else {
+    if (!cliente || !sistema) return res.status(400).json({ erro: "Informe cliente e sistema." });
+    memoria.dados.sistemas[n] = { cliente: String(cliente), sistema: String(sistema), ...(obs ? { obs: String(obs) } : {}) };
+  }
+  memoria.salvar("sistemas");
+  res.json({ ok: true, clientes: memoria.dados.sistemas });
+});
+
 app.post("/time/alteracoes/:id", async (req, res) => {
   if (!chaveDoTimeOk(req)) return res.status(401).json({ erro: "Chave do time inválida." });
   if (!memoria) return res.status(503).json({ erro: "Motor ainda iniciando." });
