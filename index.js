@@ -48,6 +48,7 @@ const { mensagemPadrao, hojeData } = require("./prospeccao");
 const EMPRESAS_DIR = path.join(__dirname, "empresas");
 const EMPRESA_ARQUIVO = process.env.EMPRESA_ARQUIVO || "keller-ia.json";
 const AUTH_DIR = path.join(__dirname, "auth_info");
+const ATENDENTE_LIGADO = process.env.ATENDENTE_LIGADO === "sim"; // desligado por padrão
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || ""; // chave que o painel de leads usa pra autenticar o envio
 
@@ -659,7 +660,11 @@ async function comandoDoKeller(m, texto) {
       case "ativar":
         memoria.dados.ajustes.ativo = true;
         memoria.salvar("ajustes");
-        return avisarKeller("▶️ Atendente ligado.");
+        return avisarKeller(
+          ATENDENTE_LIGADO
+            ? "▶️ Atendente ligado."
+            : "⏸️ O atendente de IA está desligado no sistema. Pra religar, peça pro Claude (ou crie ATENDENTE_LIGADO=sim no Render)."
+        );
       default:
         return avisarKeller(`Não conheço o comando #${cmd}.\n\n${AJUDA}`);
     }
@@ -722,6 +727,9 @@ async function tratarMensagem(m, type) {
   }
 
   // Mensagem de cliente
+  // Atendente de IA DESLIGADO por decisão do Keller (nov/2026): não responde ninguém.
+  // Pra religar no futuro, crie no Render a variável ATENDENTE_LIGADO=sim.
+  if (!ATENDENTE_LIGADO) return;
   if (type !== "notify" || naMinhaConversa || !atendente || !memoria) return;
   if (!memoria.dados.ajustes.ativo || estaPausado(jid) || estaIgnorado(jid, m)) return;
 
@@ -831,7 +839,7 @@ app.get("/", (req, res) => {
     res.send(`
       <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
       <body style="font-family:sans-serif;text-align:center;padding:60px 16px">
-        <h1>✅ Atendente Keller IA ligado</h1>
+        <h1>${ATENDENTE_LIGADO ? "✅ Atendente Keller IA ligado" : "⏸️ Atendente de IA desligado (WhatsApp conectado)"}</h1>
         <p>${atendente ? "Respondendo clientes sozinho." : "IA desligada: falta a GROQ_API_KEY no Render."}</p>
         <p>Perguntas esperando o Keller: <b>${pend}</b></p>
         <p style="color:#666">Mande <b>#ajuda</b> na sua conversa com você mesmo no WhatsApp pra ver os comandos.</p>
