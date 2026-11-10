@@ -60,3 +60,11 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
 - `cofre.js` — criptografia.
 - `firestore.js` — acesso ao banco.
 - `prospeccao.js` — mensagem padrão pros leads.
+
+## Ponto Eletrônico (comprovante por WhatsApp)
+
+- `POST /ponto/comprovante` com `{ empresa, marcacao }` — chamado pelo tablet do app
+  `kellercamilodeoliveira-del.github.io/apps/ponto` a cada batida.
+- O motor lê a batida direto no Firestore (`ponto_empresas/...`), só aceita batida feita
+  nos últimos 15 minutos e só uma vez, gera o comprovante em PDF (`ponto.js`) e manda no
+  WhatsApp do colaborador (campo `whatsapp` do código) e do gestor (`whatsappGestor` da empresa).

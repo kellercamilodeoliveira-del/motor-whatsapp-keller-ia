@@ -44,6 +44,7 @@ const { usarSessaoFirestore } = require("./sessao");
 const { carregarMemoria } = require("./memoria");
 const { criarAtendente } = require("./atendente");
 const { mensagemPadrao, hojeData } = require("./prospeccao");
+const { registrarPonto } = require("./ponto");
 
 const EMPRESAS_DIR = path.join(__dirname, "empresas");
 const EMPRESA_ARQUIVO = process.env.EMPRESA_ARQUIVO || "keller-ia.json";
@@ -981,6 +982,9 @@ app.get("/agenda", async (req, res) => {
     res.status(500).send("Não consegui carregar a agenda agora.");
   }
 });
+
+// Ponto Eletrônico: comprovante de cada batida no WhatsApp do colaborador e do gestor.
+registrarPonto(app, { enviar, paraJid, estaConectado: () => statusConexao === "conectado" && !!sock });
 
 // O Painel de Leads chama este endpoint pra mandar mensagem automaticamente.
 app.post("/enviar", async (req, res) => {

@@ -9,11 +9,12 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
-    "qrcode": "^1.5.3",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "groq-sdk": "^0.5.0",
-    "dotenv": "^16.4.5",
-    "pino": "^9.0.0"
+    "pdfkit": "^0.15.0",
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.3"
   },
   "engines": {
     "node": ">=18"
