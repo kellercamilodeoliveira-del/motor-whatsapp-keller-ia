@@ -15,6 +15,26 @@ const ORIGENS = ["https://kellercamilodeoliveira-del.github.io", "http://localho
 const VALIDADE_MS = 15 * 60 * 1000; // só manda comprovante de batida feita nos últimos 15 min
 const LIMITE_DIA_EMPRESA = 600; // trava contra abuso
 const FUSO = "America/Sao_Paulo";
+const SITE_PONTO = "https://kellercamilodeoliveira-del.github.io/apps/ponto/";
+// Marca de clientes configurada no próprio app (mesmo mapa MARCAS do index.html).
+const MARCAS = {
+  "betolubservicosa-cmcx": { cor: "#e3262b", logo: "marcas/betolub.png" },
+};
+const logosBaixados = new Map();
+async function carregarLogo(logo) {
+  if (!logo) return null;
+  if (logosBaixados.has(logo)) return logosBaixados.get(logo);
+  let buf = null;
+  try {
+    if (logo.startsWith("data:image/")) buf = Buffer.from(logo.split(",")[1] || "", "base64");
+    else {
+      const r = await fetch(new URL(logo, SITE_PONTO));
+      if (r.ok) buf = Buffer.from(await r.arrayBuffer());
+    }
+  } catch (e) {}
+  logosBaixados.set(logo, buf);
+  return buf;
+}
 
 function valor(v) {
   if (v == null) return null;
@@ -46,7 +66,7 @@ const dataBR = (d) => d.toLocaleDateString("pt-BR", { timeZone: FUSO, weekday: "
 const horaBR = (d) => d.toLocaleTimeString("pt-BR", { timeZone: FUSO, hour: "2-digit", minute: "2-digit" });
 const slug = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
-function gerarPdf({ emp, m, cod, marcacao }) {
+function gerarPdf({ emp, m, cod, marcacao, cor, logo }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A5", margin: 36 });
     const partes = [];
@@ -54,8 +74,15 @@ function gerarPdf({ emp, m, cod, marcacao }) {
     doc.on("end", () => resolve(Buffer.concat(partes)));
     doc.on("error", reject);
     const W = doc.page.width;
-    doc.rect(0, 0, W, 8).fill("#4f46e5");
-    doc.fillColor("#111").font("Helvetica-Bold").fontSize(16).text(emp.nome || "", 36, 30);
+    doc.rect(0, 0, W, 8).fill(cor || "#4f46e5");
+    if (logo) {
+      try {
+        doc.roundedRect(36, 24, 150, 64, 6).fill("#141416");
+        doc.image(logo, 42, 28, { fit: [138, 56], align: "center", valign: "center" });
+        doc.y = 98;
+      } catch (e) { doc.y = 30; }
+    } else doc.y = 30;
+    doc.fillColor("#111").font("Helvetica-Bold").fontSize(16).text(emp.nome || "", 36, doc.y);
     doc.font("Helvetica").fontSize(9).fillColor("#555");
     if (emp.cnpj) doc.text(`CNPJ: ${emp.cnpj}`);
     if (emp.endereco) doc.text(emp.endereco);
@@ -120,7 +147,8 @@ function registrarPonto(app, { enviar, paraJid, estaConectado }) {
     if (soNumeros(emp.whatsappGestor).length >= 10 && aviso.gestor !== false) destinos.push(emp.whatsappGestor);
     if (!destinos.length) return;
     if (!(await esperarConexao(120000))) return console.log("⚠️ Ponto: WhatsApp desconectado, comprovante não enviado.");
-    const pdf = await gerarPdf({ emp, m, cod, marcacao });
+    const marca = { ...(MARCAS[empresa] || {}), ...Object.fromEntries(Object.entries(emp.marca || {}).filter(([, v]) => v)) };
+    const pdf = await gerarPdf({ emp, m, cod, marcacao, cor: marca.cor, logo: await carregarLogo(marca.logo) });
     const legenda = `🕐 *${m.tipo}* registrada\n${m.nome}\n${dataBR(m.ts)} às ${horaBR(m.ts)}\n${emp.nome}`;
     const fileName = `ponto-${slug(m.nome)}-${m.ts.toISOString().slice(0, 10)}-${horaBR(m.ts).replace(":", "h")}.pdf`;
     const vistos = new Set();

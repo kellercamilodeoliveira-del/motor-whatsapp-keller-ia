@@ -730,7 +730,9 @@ async function tratarMensagem(m, type) {
   // Mensagem de cliente
   // Atendente de IA DESLIGADO por decisão do Keller (nov/2026): não responde ninguém.
   // Pra religar no futuro, crie no Render a variável ATENDENTE_LIGADO=sim.
-  if (!ATENDENTE_LIGADO) return;
+  // Exceção: clientes de sistema (cadastrados com #cliente) continuam atendidos, pra
+  // pedidos de alteração e problemas nos apps chegarem no time (Mecânico).
+  if (!ATENDENTE_LIGADO && !(memoria && numeroDoCliente(jid, m))) return;
   if (type !== "notify" || naMinhaConversa || !atendente || !memoria) return;
   if (!memoria.dados.ajustes.ativo || estaPausado(jid) || estaIgnorado(jid, m)) return;
 
