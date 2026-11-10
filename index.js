@@ -985,6 +985,23 @@ app.get("/agenda", async (req, res) => {
   }
 });
 
+// O time manda uma mensagem pra um CLIENTE DE SISTEMA cadastrado (ex.: guia de instalação).
+// Só pra números do cadastro #cliente, e só com a chave do time.
+app.post("/time/enviar", async (req, res) => {
+  if (!chaveDoTimeOk(req)) return res.status(401).json({ erro: "Chave do time inválida." });
+  if (statusConexao !== "conectado" || !sock || !memoria) return res.status(503).json({ erro: "WhatsApp ainda não está conectado." });
+  const { numero, mensagem } = req.body || {};
+  const cadastrado = Object.keys(memoria.dados.sistemas || {}).find((n) => ultimos8(n) === ultimos8(numero));
+  if (!cadastrado) return res.status(403).json({ erro: "Esse número não é cliente de sistema cadastrado." });
+  if (!mensagem || String(mensagem).length > 3000) return res.status(400).json({ erro: "Mensagem vazia ou grande demais." });
+  try {
+    await enviar(paraJid(cadastrado), { text: String(mensagem) });
+    res.json({ ok: true, para: cadastrado });
+  } catch (erro) {
+    res.status(500).json({ erro: "Falha ao enviar.", detalhe: erro.message });
+  }
+});
+
 // Conectar o WhatsApp sem ler QR code: gera o código de 8 letras pra digitar no celular
 // (WhatsApp > Aparelhos conectados > Conectar um aparelho > Conectar com número de telefone).
 // Só pro número do próprio Keller, e só com a chave do time.
