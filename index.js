@@ -985,6 +985,22 @@ app.get("/agenda", async (req, res) => {
   }
 });
 
+// Conectar o WhatsApp sem ler QR code: gera o código de 8 letras pra digitar no celular
+// (WhatsApp > Aparelhos conectados > Conectar um aparelho > Conectar com número de telefone).
+// Só pro número do próprio Keller, e só com a chave do time.
+const NUMERO_PAREAR = (process.env.NUMERO_PAREAR || "5514988324456").replace(/\D/g, "");
+app.post("/time/parear", async (req, res) => {
+  if (!chaveDoTimeOk(req)) return res.status(401).json({ erro: "Chave do time inválida." });
+  if (statusConexao === "conectado") return res.json({ ok: true, jaConectado: true });
+  if (!sock || statusConexao !== "aguardando_qr") return res.status(503).json({ erro: "Motor ainda iniciando, tente em 30 segundos.", status: statusConexao });
+  try {
+    const codigo = await sock.requestPairingCode(NUMERO_PAREAR);
+    res.json({ ok: true, codigo, numero: NUMERO_PAREAR });
+  } catch (erro) {
+    res.status(500).json({ erro: "Não consegui gerar o código.", detalhe: erro.message });
+  }
+});
+
 // Ponto Eletrônico: comprovante de cada batida no WhatsApp do colaborador e do gestor.
 registrarPonto(app, { enviar, paraJid, estaConectado: () => statusConexao === "conectado" && !!sock });
 
