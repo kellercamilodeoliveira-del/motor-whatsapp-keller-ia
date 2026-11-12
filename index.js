@@ -1019,7 +1019,7 @@ app.post("/time/parear", async (req, res) => {
 });
 
 // Ponto Eletrônico: comprovante de cada batida no WhatsApp do colaborador e do gestor.
-registrarPonto(app, { enviar, paraJid, estaConectado: () => statusConexao === "conectado" && !!sock });
+registrarPonto(app, { enviar, paraJid, estaConectado: () => statusConexao === "conectado" && !!sock, memoria: () => memoria });
 
 // O Painel de Leads chama este endpoint pra mandar mensagem automaticamente.
 app.post("/enviar", async (req, res) => {

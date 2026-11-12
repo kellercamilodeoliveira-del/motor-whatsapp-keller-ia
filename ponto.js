@@ -7,6 +7,7 @@
  * em PDF e manda no WhatsApp do colaborador e do gestor.
  */
 const PDFDocument = require("pdfkit");
+const { iniciarAlertasPonto } = require("./pontoAlertas");
 
 const PROJETO = "escritorio-c3acb";
 const API_KEY_FIREBASE = "AIzaSyBZyZ4Dqs0BI5VSsm3HB2TNGpk7Z7330CE";
@@ -107,7 +108,8 @@ function gerarPdf({ emp, m, cod, marcacao, cor, logo }) {
   });
 }
 
-function registrarPonto(app, { enviar, paraJid, estaConectado }) {
+function registrarPonto(app, { enviar, paraJid, estaConectado, memoria }) {
+  const alertas = iniciarAlertasPonto({ lerDoc, enviar, paraJid, estaConectado, memoria: memoria || (() => null) });
   const jaEnviadas = new Map(); // marcacao -> quando
   const contagem = new Map(); // empresa|dia -> quantas
 
@@ -141,6 +143,7 @@ function registrarPonto(app, { enviar, paraJid, estaConectado }) {
     if (n > LIMITE_DIA_EMPRESA) return console.log(`⚠️ Ponto: limite diário de comprovantes atingido em ${empresa}.`);
     const cod = m.codigo ? await lerDoc(`ponto_empresas/${empresa}/codigos/${m.codigo}`) : null;
     if (!cod || cod.funcionarioId !== m.funcionarioId) return;
+    alertas.aoBater(empresa, m).catch((e) => console.error("Ponto: erro no aviso de horário:", e.message));
     const aviso = emp.notificar || {};
     const destinos = [];
     if (soNumeros(cod.whatsapp).length >= 10 && aviso.funcionario !== false) destinos.push(cod.whatsapp);

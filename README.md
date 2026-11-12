@@ -68,3 +68,11 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
 - O motor lê a batida direto no Firestore (`ponto_empresas/...`), só aceita batida feita
   nos últimos 15 minutos e só uma vez, gera o comprovante em PDF (`ponto.js`) e manda no
   WhatsApp do colaborador (campo `whatsapp` do código) e do gestor (`whatsappGestor` da empresa).
+
+### Avisos de horário (tolerância) — `pontoAlertas.js`
+
+- Horários de cada empresa no mapa `HORARIOS` (tolerância em minutos e o WhatsApp que recebe os avisos).
+  Betolub: seg–sex 08:30 / 12:00 / 13:30 / 18:00, sáb 08:00 / 13:00, tolerância 10 min, avisos no (14) 99111-2441.
+- Na batida: avisa entrada ou volta do almoço depois do horário + tolerância, e saída (almoço ou fim do dia) antes do horário − tolerância.
+- Passou a tolerância: avisa quem ainda não bateu a entrada e quem saiu para o almoço e não voltou (1 aviso por dia em cada horário).
+- Feriado cadastrado no app = sem aviso. A equipe é aprendida pelas batidas (guardada criptografada no caderno); código apagado sai da lista.
