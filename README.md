@@ -71,8 +71,8 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
 
 ### Avisos de horário (tolerância) — `pontoAlertas.js`
 
-- Horários de cada empresa no mapa `HORARIOS` (tolerância em minutos e o WhatsApp que recebe os avisos).
-  Betolub: seg–sex 08:30 / 12:00 / 13:30 / 18:00, sáb 08:00 / 13:00, tolerância 10 min, avisos no (14) 99111-2441.
+- Horários de cada empresa no mapa `HORARIOS` (tolerância em minutos e o WhatsApp que recebe os avisos). Horários e tolerâncias são relidos a cada 10 min de `apps/ponto/horarios.json` do site, então mudar horário não precisa reiniciar o motor.
+  Betolub: seg–sex 08:30 / 12:00 / 13:30 / 18:00, sáb 08:00 / 13:00, tolerância 10 min (saída do fim do dia 6 min), avisos no (14) 99111-2441.
 - Na batida: avisa entrada ou volta do almoço depois do horário + tolerância, e saída (almoço ou fim do dia) antes do horário − tolerância.
 - Passou a tolerância: avisa quem ainda não bateu a entrada e quem saiu para o almoço e não voltou (1 aviso por dia em cada horário).
 - Feriado cadastrado no app = sem aviso. A equipe é aprendida pelas batidas (guardada criptografada no caderno); código apagado sai da lista.

@@ -12,10 +12,14 @@
  */
 
 // Horários combinados com cada empresa (dia da semana: 0 = domingo ... 6 = sábado).
+// Os horários e tolerâncias são relidos a cada 10 min de apps/ponto/horarios.json do site
+// (assim dá pra mudar sem reiniciar o motor); o que está aqui vale se o arquivo não abrir.
+// O número dos avisos fica só aqui no código.
 // Dia com 4 horários: entrada, saída almoço, volta almoço, saída. Dia com 2: entrada, saída.
 const HORARIOS = {
   "betolubservicosa-cmcx": {
-    tolerancia: 10, // minutos
+    tolerancia: 10, // minutos (entrada, saída para almoço e volta do almoço)
+    toleranciaSaida: 6, // minutos (saída do fim do dia)
     alertas: "14991112441", // WhatsApp que recebe os avisos
     dias: {
       1: ["08:30", "12:00", "13:30", "18:00"],
@@ -28,7 +32,33 @@ const HORARIOS = {
   },
 };
 
+const URL_HORARIOS = "https://kellercamilodeoliveira-del.github.io/apps/ponto/horarios.json";
 const FUSO = "America/Sao_Paulo";
+const tolDe = (cfg, i, h) => (i === h.length - 1 && Number.isFinite(cfg.toleranciaSaida) ? cfg.toleranciaSaida : cfg.tolerancia);
+
+// junta o que veio do site com o que está no código (só aceita o que tem formato certo)
+function mesclarHorarios(base, remoto) {
+  const out = {};
+  for (const [emp, cfg] of Object.entries(base)) {
+    const r = remoto && typeof remoto === "object" ? remoto[emp] : null, novo = { ...cfg };
+    if (r && typeof r === "object") {
+      const minOk = (v) => Number.isInteger(v) && v >= 0 && v <= 60;
+      if (minOk(r.tolerancia)) novo.tolerancia = r.tolerancia;
+      if (minOk(r.toleranciaSaida)) novo.toleranciaSaida = r.toleranciaSaida;
+      if (r.dias && typeof r.dias === "object") {
+        const dias = {};
+        let ok = true;
+        for (const [d, h] of Object.entries(r.dias)) {
+          if (!/^[0-6]$/.test(d) || !Array.isArray(h) || ![2, 4].includes(h.length) || !h.every((x) => /^([01]\d|2[0-3]):[0-5]\d$/.test(x))) { ok = false; break; }
+          dias[d] = h;
+        }
+        if (ok) novo.dias = dias;
+      }
+    }
+    out[emp] = novo;
+  }
+  return out;
+}
 const JANELA_MIN = 90; // até quantos minutos depois do limite o aviso de ausência ainda sai (cobre reinício do motor)
 const EQUIPE_DIAS = 21; // código sem batida há mais que isso sai da lista de conferência
 const DIAS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
@@ -66,7 +96,7 @@ function avisoDaBatida(cfg, tipo, ts, nome) {
   if (!h) return null;
   const i = indiceDaBatida(tipo, h);
   if (i < 0) return null;
-  const previsto = hm2min(h[i]), dif = sp.min - previsto, tol = cfg.tolerancia;
+  const previsto = hm2min(h[i]), dif = sp.min - previsto, tol = tolDe(cfg, i, h);
   const primeiro = String(nome || "").trim();
   if (i % 2 === 0 && dif > tol) {
     return `⏰ *${primeiro}* chegou *${durTxt(dif)} atrasado* n${i === 0 ? "a entrada" : "a volta do almoço"}.\nHorário: ${h[i]} · bateu às ${min2hm(sp.min)} (tolerância ${tol} min).`;
@@ -89,6 +119,16 @@ function quemFalta(indice, dia, codigos) {
 }
 
 function iniciarAlertasPonto({ lerDoc, enviar, paraJid, estaConectado, memoria }) {
+  let horarios = HORARIOS;
+  async function recarregarHorarios() {
+    try {
+      const r = await fetch(URL_HORARIOS + "?t=" + Date.now(), { signal: AbortSignal.timeout(15000) });
+      if (r.ok) horarios = mesclarHorarios(HORARIOS, await r.json());
+    } catch (e) {}
+  }
+  recarregarHorarios();
+  setInterval(recarregarHorarios, 10 * 60 * 1000);
+
   const caderno = () => {
     const mem = memoria();
     if (!mem) return null;
@@ -111,7 +151,7 @@ function iniciarAlertasPonto({ lerDoc, enviar, paraJid, estaConectado, memoria }
 
   // chamada a cada batida conferida (ponto.js)
   async function aoBater(empresa, m) {
-    const cfg = HORARIOS[empresa];
+    const cfg = horarios[empresa];
     if (!cfg) return;
     const mem = caderno();
     if (mem && m.codigo) {
@@ -130,7 +170,7 @@ function iniciarAlertasPonto({ lerDoc, enviar, paraJid, estaConectado, memoria }
     const mem = caderno();
     if (!mem || !estaConectado()) return;
     const sp = agoraSP();
-    for (const [empresa, cfg] of Object.entries(HORARIOS)) {
+    for (const [empresa, cfg] of Object.entries(horarios)) {
       const h = cfg.dias[sp.dow];
       if (!h) continue;
       for (const indice of h.length === 4 ? [0, 2] : [0]) {
@@ -176,4 +216,4 @@ function iniciarAlertasPonto({ lerDoc, enviar, paraJid, estaConectado, memoria }
   return { aoBater };
 }
 
-module.exports = { iniciarAlertasPonto, HORARIOS, _teste: { avisoDaBatida, quemFalta, agoraSP } };
+module.exports = { iniciarAlertasPonto, HORARIOS, _teste: { avisoDaBatida, quemFalta, agoraSP, mesclarHorarios } };
