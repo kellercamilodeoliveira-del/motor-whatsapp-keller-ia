@@ -87,3 +87,16 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
 - Lista e estado ficam no caderno (campo `vigia`, criptografado). Lista inicial em `SITES_PADRAO`.
 - Página pra mostrar a clientes: `/vigia/painel` (dados em JSON: `/vigia`).
 - O vigia não enxerga o próprio motor: quem cuida dele é o Plantonista do Motor.
+
+## DuaPi.NFe — nota fiscal direto na Sefaz (`nfe.js`)
+
+- App: `kellercamilodeoliveira-del.github.io/apps/nfe` (repositório do site). O motor faz a parte da Sefaz.
+- Sem serviço pago: XML, assinatura e envio pela biblioteca `node-sped-nfe` (MIT); DANFE por `node-sped-pdf` (MIT).
+  O `nfe.js` ajusta uma linha do `node-sped-pdf` ao iniciar (protocolo no DANFE e fuso de Brasília).
+- Empresa criada pelo Keller: `#nfe nova Nome` → código + senha. `#nfe empresas`, `#nfe senha código`.
+- Certificado A1: aceito em qualquer formato de .pfx, regravado em 3DES (OpenSSL 3 lê sem "legacy"),
+  guardado criptografado em `config/nfe-emp-<id>`. Notas autorizadas (nfeProc) em `config/nfe-xml-<id>-<chave>`.
+- Rotas (`Authorization: Bearer <token>` do `/nfe/login`): `/nfe/eu`, `/nfe/dados`, `/nfe/certificado`, `/nfe/sefaz`,
+  `/nfe/emitir`, `/nfe/ambiente`, `/nfe/senha`, `/nfe/nota/:chave/xml|pdf`, `/nfe/nota/:chave/cancelar|whatsapp`.
+- Começa em homologação; produção só depois de 1 nota de teste autorizada. Versão 1: Simples Nacional e MEI.
+- Se o cliente informar WhatsApp, o motor manda o DANFE (PDF) e o XML pra ele.

@@ -12,6 +12,9 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "groq-sdk": "^0.5.0",
+    "node-forge": "^1.4.3",
+    "node-sped-nfe": "^1.2.52",
+    "node-sped-pdf": "^1.0.66",
     "pdfkit": "^0.15.0",
     "pino": "^9.0.0",
     "qrcode": "^1.5.3"

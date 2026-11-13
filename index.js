@@ -46,6 +46,7 @@ const { criarAtendente } = require("./atendente");
 const { mensagemPadrao, hojeData } = require("./prospeccao");
 const { registrarPonto } = require("./ponto");
 const { iniciarVigia, registrarVigia } = require("./vigia");
+const { registrarNfe } = require("./nfe");
 
 const EMPRESAS_DIR = path.join(__dirname, "empresas");
 const EMPRESA_ARQUIVO = process.env.EMPRESA_ARQUIVO || "keller-ia.json";
@@ -524,6 +525,10 @@ const AJUDA =
   "• #aviso → liga a notificação que toca no celular quando eu precisar de você\n" +
   "• #aviso desligar → desliga essa notificação\n" +
   "• #aprendido → tudo o que você já ensinou\n\n" +
+  "🧾 *App de Nota Fiscal* (DuaPi.NFe):\n" +
+  "• #nfe nova Nome da Empresa → cria o acesso de uma empresa\n" +
+  "• #nfe empresas → lista as empresas\n" +
+  "• #nfe senha código → gera senha nova\n\n" +
   "🛠️ *Clientes de sistemas* (o time cuida das alterações):\n" +
   "• #cliente 14999999999 | Empresa | Sistema → cadastra quem pode pedir alteração\n" +
   "• #cliente remover 14999999999 → tira do cadastro\n" +
@@ -535,7 +540,7 @@ const AJUDA =
 function pareceAvisoDoMotor(texto) {
   const t = String(texto || "").trim();
   return (
-    /^(❓|✅|📋|📚|🔔|🔕|⚠️|🤖|⏸️|▶️|🗑️|🛠️|🛰️|🔴|🟢|⏳)/u.test(t) ||
+    /^(❓|✅|📋|📚|🔔|🔕|⚠️|🤖|⏸️|▶️|🗑️|🛠️|🛰️|🔴|🟢|⏳|🧾)/u.test(t) ||
     /Pergunta de cliente|O time precisa de você|Arraste esta mensagem|Respondi .* e guardei|Comandos do atendente/i.test(t)
   );
 }
@@ -558,6 +563,9 @@ async function comandoDoKeller(m, texto) {
     const [cmd, ...resto] = t.slice(1).split(/\s+/);
     const arg = resto.join(" ").trim();
     const respostaVigia = vigia ? vigia.comando(cmd.toLowerCase(), arg) : null;
+    if (cmd.toLowerCase() === "nfe") {
+      try { return avisarKeller(await nfe.comando(arg)); } catch (e) { return avisarKeller("⚠️ App de nota: " + e.message); }
+    }
     if (respostaVigia) return avisarKeller(respostaVigia);
     switch (cmd.toLowerCase()) {
       case "ajuda":
@@ -1029,6 +1037,9 @@ registrarPonto(app, { enviar, paraJid, estaConectado: () => statusConexao === "c
 const VIGIA_LIGADO = false;
 const vigia = VIGIA_LIGADO ? iniciarVigia({ memoria: () => memoria, avisarKeller, notificarCelular, estaConectado: () => statusConexao === "conectado" && !!sock }) : null;
 if (vigia) registrarVigia(app, vigia);
+
+// DuaPi.NFe: emissão de nota fiscal direto na Sefaz (app em apps/nfe do site).
+const nfe = registrarNfe(app, { cofre: () => cofre, enviar, paraJid, estaConectado: () => statusConexao === "conectado" && !!sock, avisarKeller });
 
 // O Painel de Leads chama este endpoint pra mandar mensagem automaticamente.
 app.post("/enviar", async (req, res) => {
