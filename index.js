@@ -524,10 +524,6 @@ const AJUDA =
   "• #aviso → liga a notificação que toca no celular quando eu precisar de você\n" +
   "• #aviso desligar → desliga essa notificação\n" +
   "• #aprendido → tudo o que você já ensinou\n\n" +
-  "🛰️ *Vigia de Sistemas* (te aviso se algum site cair ou voltar):\n" +
-  "• #vigia → situação de cada site agora\n" +
-  "• #vigiar https://site.com.br Nome → começa a vigiar\n" +
-  "• #desvigiar nome → para de vigiar\n\n" +
   "🛠️ *Clientes de sistemas* (o time cuida das alterações):\n" +
   "• #cliente 14999999999 | Empresa | Sistema → cadastra quem pode pedir alteração\n" +
   "• #cliente remover 14999999999 → tira do cadastro\n" +
@@ -561,7 +557,7 @@ async function comandoDoKeller(m, texto) {
   if (t.startsWith("#")) {
     const [cmd, ...resto] = t.slice(1).split(/\s+/);
     const arg = resto.join(" ").trim();
-    const respostaVigia = vigia.comando(cmd.toLowerCase(), arg);
+    const respostaVigia = vigia ? vigia.comando(cmd.toLowerCase(), arg) : null;
     if (respostaVigia) return avisarKeller(respostaVigia);
     switch (cmd.toLowerCase()) {
       case "ajuda":
@@ -1029,8 +1025,10 @@ app.post("/time/parear", async (req, res) => {
 registrarPonto(app, { enviar, paraJid, estaConectado: () => statusConexao === "conectado" && !!sock, memoria: () => memoria });
 
 // Vigia de Sistemas: confere os sites a cada 5 min e avisa o Keller se algum cair ou voltar.
-const vigia = iniciarVigia({ memoria: () => memoria, avisarKeller, notificarCelular, estaConectado: () => statusConexao === "conectado" && !!sock });
-registrarVigia(app, vigia);
+// DESLIGADO a pedido do Keller (13/11/2026). Pra religar, troque para true.
+const VIGIA_LIGADO = false;
+const vigia = VIGIA_LIGADO ? iniciarVigia({ memoria: () => memoria, avisarKeller, notificarCelular, estaConectado: () => statusConexao === "conectado" && !!sock }) : null;
+if (vigia) registrarVigia(app, vigia);
 
 // O Painel de Leads chama este endpoint pra mandar mensagem automaticamente.
 app.post("/enviar", async (req, res) => {
