@@ -314,6 +314,13 @@ function registrarNfe(app, { cofre, enviar, paraJid, estaConectado, avisarKeller
     }
   };
 
+  // confere se o servidor tem o que a assinatura precisa (openssl) e a validação (xmllint, opcional)
+  app.get("/nfe/saude", (req, res) => {
+    const { spawnSync } = require("child_process");
+    const tem = (cmd, args) => { try { const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 5000 }); return r.status === 0 ? (r.stdout || r.stderr || "").trim().split("\n")[0] : false; } catch (e) { return false; } };
+    res.json({ openssl: tem("openssl", ["version"]), xmllint: tem("xmllint", ["--version"]) });
+  });
+
   app.post("/nfe/login", rota(async (req, res) => {
     const ip = String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim();
     const t = tentativasLogin.get(ip) || { n: 0, desde: Date.now() };
