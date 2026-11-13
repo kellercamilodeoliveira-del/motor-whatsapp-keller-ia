@@ -76,3 +76,14 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
 - Na batida: avisa entrada ou volta do almoço depois do horário + tolerância, e saída (almoço ou fim do dia) antes do horário − tolerância.
 - Passou a tolerância: avisa quem ainda não bateu a entrada e quem saiu para o almoço e não voltou (1 aviso por dia em cada horário).
 - Feriado cadastrado no app = sem aviso. A equipe é aprendida pelas batidas (guardada criptografada no caderno); código apagado sai da lista.
+
+## Vigia de Sistemas — `vigia.js`
+
+- Confere a cada 5 min se os sites da lista estão no ar. "No ar" = o servidor respondeu
+  (qualquer código abaixo de 500); fora = sem resposta, mais de 20 s ou erro 5xx.
+- Caiu (3 falhas seguidas): avisa na conversa do Keller com ele mesmo e no celular (ntfy,
+  se o `#aviso` estiver ligado). Voltou: avisa de novo com o tempo que ficou fora.
+- Comandos: `#vigia` (situação agora), `#vigiar https://site.com.br Nome`, `#desvigiar nome`.
+- Lista e estado ficam no caderno (campo `vigia`, criptografado). Lista inicial em `SITES_PADRAO`.
+- Página pra mostrar a clientes: `/vigia/painel` (dados em JSON: `/vigia`).
+- O vigia não enxerga o próprio motor: quem cuida dele é o Plantonista do Motor.

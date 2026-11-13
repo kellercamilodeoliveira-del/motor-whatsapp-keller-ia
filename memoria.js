@@ -6,7 +6,7 @@
 const fsdb = require("./firestore");
 
 const DOC = process.env.MEMORIA_DOC || "config/atendenteMemoria";
-const CAMPOS = ["conhecimento", "pendencias", "pausas", "ajustes", "apresentados", "enviadas", "sistemas", "alteracoes", "pontoEquipe", "pontoAvisos"];
+const CAMPOS = ["conhecimento", "pendencias", "pausas", "ajustes", "apresentados", "enviadas", "sistemas", "alteracoes", "pontoEquipe", "pontoAvisos", "vigia"];
 
 async function carregarMemoria(cofre) {
   const dados = {
@@ -19,6 +19,7 @@ async function carregarMemoria(cofre) {
     sistemas: {}, // número (só dígitos) -> { cliente, sistema, obs } — clientes que podem pedir alteração (#cliente)
     pontoEquipe: {}, // empresa -> código -> { nome, visto } (equipe aprendida pelas batidas, pros avisos de horário do Ponto)
     pontoAvisos: {}, // "empresa|dia|indice" -> quando o aviso de ausência foi feito
+    vigia: {}, // Vigia de Sistemas: { sites: [{ nome, url }], estado: url -> { ok, falhas, caiuEm, ... }, apresentado }
     alteracoes: {}, // id -> pedido de alteração { jid, numero, nome, cliente, sistema, pedido, status, linkTeste, historico[], criadoEm, atualizadoEm }
   };
 

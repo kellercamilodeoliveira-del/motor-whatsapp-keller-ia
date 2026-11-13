@@ -45,6 +45,7 @@ const { carregarMemoria } = require("./memoria");
 const { criarAtendente } = require("./atendente");
 const { mensagemPadrao, hojeData } = require("./prospeccao");
 const { registrarPonto } = require("./ponto");
+const { iniciarVigia, registrarVigia } = require("./vigia");
 
 const EMPRESAS_DIR = path.join(__dirname, "empresas");
 const EMPRESA_ARQUIVO = process.env.EMPRESA_ARQUIVO || "keller-ia.json";
@@ -523,6 +524,10 @@ const AJUDA =
   "• #aviso → liga a notificação que toca no celular quando eu precisar de você\n" +
   "• #aviso desligar → desliga essa notificação\n" +
   "• #aprendido → tudo o que você já ensinou\n\n" +
+  "🛰️ *Vigia de Sistemas* (te aviso se algum site cair ou voltar):\n" +
+  "• #vigia → situação de cada site agora\n" +
+  "• #vigiar https://site.com.br Nome → começa a vigiar\n" +
+  "• #desvigiar nome → para de vigiar\n\n" +
   "🛠️ *Clientes de sistemas* (o time cuida das alterações):\n" +
   "• #cliente 14999999999 | Empresa | Sistema → cadastra quem pode pedir alteração\n" +
   "• #cliente remover 14999999999 → tira do cadastro\n" +
@@ -534,7 +539,7 @@ const AJUDA =
 function pareceAvisoDoMotor(texto) {
   const t = String(texto || "").trim();
   return (
-    /^(❓|✅|📋|📚|🔔|🔕|⚠️|🤖|⏸️|▶️|🗑️|🛠️)/u.test(t) ||
+    /^(❓|✅|📋|📚|🔔|🔕|⚠️|🤖|⏸️|▶️|🗑️|🛠️|🛰️|🔴|🟢|⏳)/u.test(t) ||
     /Pergunta de cliente|O time precisa de você|Arraste esta mensagem|Respondi .* e guardei|Comandos do atendente/i.test(t)
   );
 }
@@ -556,6 +561,8 @@ async function comandoDoKeller(m, texto) {
   if (t.startsWith("#")) {
     const [cmd, ...resto] = t.slice(1).split(/\s+/);
     const arg = resto.join(" ").trim();
+    const respostaVigia = vigia.comando(cmd.toLowerCase(), arg);
+    if (respostaVigia) return avisarKeller(respostaVigia);
     switch (cmd.toLowerCase()) {
       case "ajuda":
       case "comandos":
@@ -1020,6 +1027,10 @@ app.post("/time/parear", async (req, res) => {
 
 // Ponto Eletrônico: comprovante de cada batida no WhatsApp do colaborador e do gestor.
 registrarPonto(app, { enviar, paraJid, estaConectado: () => statusConexao === "conectado" && !!sock, memoria: () => memoria });
+
+// Vigia de Sistemas: confere os sites a cada 5 min e avisa o Keller se algum cair ou voltar.
+const vigia = iniciarVigia({ memoria: () => memoria, avisarKeller, notificarCelular, estaConectado: () => statusConexao === "conectado" && !!sock });
+registrarVigia(app, vigia);
 
 // O Painel de Leads chama este endpoint pra mandar mensagem automaticamente.
 app.post("/enviar", async (req, res) => {
