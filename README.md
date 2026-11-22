@@ -35,6 +35,20 @@ Atendente de IA no WhatsApp do Keller + envio automático pro Painel de Leads.
   no código fica só o hash dela).
 - Comandos: `#cliente`, `#cliente remover número`, `#clientes`, `#pedidos`.
 
+### Modo "Keller aprova" (cliente com `modo: "keller"`)
+
+- Cadastro: `POST /time/clientes` com `{ numero, cliente, sistema, obs, modo: "keller" }`.
+- O motor **nunca responde** no chat desse cliente: o Keller conversa normal.
+- O motor só lê a conversa (cliente + falas do Keller; áudio é transcrito). Quando ela
+  assenta (4 min sem mensagem nova), a IA vê se o cliente pediu mudança nos sistemas.
+  Se pediu, vira pedido (`aprovador: "keller"`) e o Keller recebe o aviso
+  (pode cancelar com `#cancelar ALT-xxx`).
+- O Mecânico faz no TESTE e manda `POST /time/alteracoes/:id` com `status: "em_teste"`,
+  `linkTeste` e `mensagemKeller` → chega pro Keller "Pronto para você aprovar (#COD)".
+- Keller arrasta e responde **OK** → `aprovado` → o Mecânico publica no oficial e avisa
+  com `mensagemKeller` (status `publicado`). Qualquer outra resposta = ajuste (volta pra `novo`).
+- Nesses pedidos o motor recusa `mensagemCliente` (o cliente não recebe nada do motor).
+
 ## Plano grátis do Render
 
 - A sessão do WhatsApp e o "caderno" do atendente ficam salvos no Firestore,

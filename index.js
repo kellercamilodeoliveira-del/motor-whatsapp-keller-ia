@@ -291,6 +291,7 @@ function registrarAlteracao(jid, nome, cs, pedido) {
     cliente: cs.cliente,
     sistema: cs.sistema,
     pedido,
+    aprovador: cs.modo === "keller" ? "keller" : "cliente", // "keller": o Keller aprova o teste, o cliente não recebe nada do motor
     status: "novo", // novo | em_andamento | em_teste | aprovado | publicado | escalado | cancelado
     linkTeste: "",
     historico: [{ em: agora, de: "cliente", texto: pedido }],
@@ -317,6 +318,58 @@ function aprovarTeste(cs) {
   memoria.salvar("alteracoes");
   console.log(`🛠️ Cliente aprovou o teste do pedido ${cs.testeAberto.id}.`);
   return cs.testeAberto.id;
+}
+
+// ---------- Modo "Keller aprova" (cliente cadastrado com modo "keller") ----------
+// O motor NUNCA responde no chat desse cliente: o Keller conversa normal.
+// O motor só lê a conversa; quando o cliente pede mudança no sistema, anota o pedido,
+// o Mecânico faz no TESTE e manda pro Keller aprovar (OK) antes de ir pro oficial.
+const ESPERA_ANALISAR_MS = 4 * 60 * 1000; // espera a conversa "assentar" antes de analisar
+const conversaSilenciosa = new Map(); // jid -> { linhas[], novas, nome, msg, timer }
+function clienteSilencioso(jid, m) {
+  if (!memoria) return null;
+  const n = numeroDoCliente(jid, m);
+  if (!n || memoria.dados.sistemas[n]?.modo !== "keller") return null;
+  return clienteSistemaDe(jid, m);
+}
+function anotarSilencioso(jid, de, texto, nome, m) {
+  const c = conversaSilenciosa.get(jid) || { linhas: [], novas: 0, nome: "", msg: null, timer: null };
+  c.linhas.push({ de, texto: String(texto).slice(0, 1500), em: Date.now() });
+  c.linhas = c.linhas.slice(-20);
+  if (nome) c.nome = nome;
+  if (m && de === "cliente") c.msg = m;
+  if (de === "cliente") c.novas++;
+  conversaSilenciosa.set(jid, c);
+  // Cliente ou Keller ainda falando: adia a análise.
+  if (c.novas > 0) {
+    clearTimeout(c.timer);
+    c.timer = setTimeout(() => analisarSilencioso(jid).catch((e) => console.error("Erro ao analisar conversa:", e)), ESPERA_ANALISAR_MS);
+  }
+}
+async function analisarSilencioso(jid) {
+  const c = conversaSilenciosa.get(jid);
+  if (!c || !c.novas || !atendente || !memoria) return;
+  const novas = c.novas;
+  c.novas = 0;
+  const cs = clienteSilencioso(jid, c.msg);
+  if (!cs) return;
+  let pedido = null;
+  try {
+    pedido = await atendente.detectarPedidoSistema(cs, c.linhas, novas);
+  } catch (erro) {
+    console.error("IA não conseguiu analisar a conversa:", erro.message);
+    return;
+  }
+  if (!pedido) return;
+  const complemento = cs.pedidoAberto && memoria.dados.alteracoes[cs.pedidoAberto.id];
+  const id = registrarAlteracao(jid, c.nome || cs.cliente, cs, pedido);
+  console.log(`🛠️ Pedido silencioso ${id} (${cs.cliente}): ${pedido}`);
+  await avisarKeller(
+    `🛠️ ${complemento ? "Complemento no pedido" : "Anotei um pedido"} da *${cs.cliente}* (${id}):\n\n“${pedido}”\n\n` +
+      `O time faz na versão de TESTE e te manda aqui para você aprovar. Nada muda no sistema dele antes do seu OK.\n` +
+      `Se não era para fazer, mande: #cancelar ${id}`
+  );
+  await notificarCelular(`Pedido da ${cs.cliente}`, pedido);
 }
 
 // Notificação que TOCA no celular (mensagem pra si mesmo no WhatsApp não toca).
@@ -428,12 +481,19 @@ async function processarCliente(jid, nome, texto, m) {
   else if (!cs && PEDIDO_DE_ACAO.test(texto)) await criarPendencia(jid, nome, `Pediu: "${texto}"`);
 }
 
+// "OK" do Keller num teste pronto. "ok, mas muda a cor" é ajuste, não aprovação.
+function respostaDeAprovacao(t) {
+  const x = String(t || "").trim().toLowerCase();
+  if (/\b(mas|por[eé]m|s[oó] que|muda|mude|troca|troque|tira|tire|coloca|coloque|ajusta|ajuste|falta|faltou|errad|n[aã]o)\b/.test(x)) return false;
+  return /^(ok+|okay|pode|aprov|sim|manda|publica|beleza|blz|perfeito|certo|ficou (bom|[oó]timo|top|show|certo|perfeito)|top|show|isso|👍|✅)/u.test(x);
+}
+
 // Coisas que a assistente não consegue fazer sozinha: se a pessoa pedir e a IA
 // esquecer de chamar o Keller, o motor chama mesmo assim.
 const PEDIDO_DE_ACAO =
   /\b(alarme|despertador|lembrete|lembra (ele|o keller)|agenda|agendar|marca(r)? (um|uma|o|a)? ?hor[aá]rio|pix|pagar|pagamento|transfer|encomend|comprar|reserva|buscar|busca (eu|a gente)|leva(r)? |traz(er)? |confirma)/i;
 
-async function criarPendencia(jid, nome, pergunta, alteracaoId = null) {
+async function criarPendencia(jid, nome, pergunta, alteracaoId = null, tipo = "") {
   const existente = pendenciaDoCliente(jid);
   let codigo = existente;
   if (existente) {
@@ -445,12 +505,19 @@ async function criarPendencia(jid, nome, pergunta, alteracaoId = null) {
   }
   const p = memoria.dados.pendencias[codigo];
   if (alteracaoId) p.alteracaoId = alteracaoId;
+  const a = p.alteracaoId ? memoria.dados.alteracoes[p.alteracaoId] : null;
+  if (tipo === "aprovar") p.aprovar = true;
   const alerta = await avisarKeller(
-    p.alteracaoId
+    tipo === "aprovar"
+      ? `🛠️ *Pronto para você aprovar* (#${codigo})\n🏢 ${a?.cliente || p.nome || "Cliente"} — ${a?.sistema || ""}\n\n` +
+          `${pergunta}\n\n` +
+          `*Arraste esta mensagem pro lado e responda OK* que eu coloco no sistema oficial. ` +
+          `Se quiser mudar algo, escreva o que ajustar.`
+      : p.alteracaoId
       ? `🛠️ *O time precisa de você* (#${codigo})\n` +
           `👤 ${p.nome || "Cliente"} — ${numeroBonito(jid)}\n\n` +
           `${p.pergunta}\n\n` +
-          `*Arraste esta mensagem pro lado e responda* (ex.: "pode fazer", "cobra R$ 300", "não faz"). O time segue a partir da sua resposta e fala com o cliente.`
+          `*Arraste esta mensagem pro lado e responda* (ex.: "pode fazer", "cobra R$ 300", "não faz"). O time segue a partir da sua resposta${a?.aprovador === "keller" ? "." : " e fala com o cliente."}`
       : `❓ *Pergunta de cliente* (#${codigo})\n` +
           `👤 ${p.nome || "Cliente"} — ${numeroBonito(jid)}\n\n` +
           `${p.pergunta}\n\n` +
@@ -460,7 +527,7 @@ async function criarPendencia(jid, nome, pergunta, alteracaoId = null) {
   if (alerta?.key?.id) p.alertaId = alerta.key.id;
   memoria.salvar("pendencias");
   await notificarCelular(
-    `Assistente precisa de voce (#${codigo})`,
+    tipo === "aprovar" ? `Pronto para aprovar (#${codigo})` : `Assistente precisa de voce (#${codigo})`,
     `${p.nome || "Contato"} (${numeroBonito(jid)}): ${p.pergunta}\n\nResponda na conversa com voce mesmo no WhatsApp.`
   );
 }
@@ -484,12 +551,15 @@ async function resolverPendencia(codigo, resposta, origem) {
   if (p.alteracaoId && memoria.dados.alteracoes[p.alteracaoId]) {
     // Resposta do Keller sobre um pedido de alteração: volta pro Mecânico com a decisão dele.
     const a = memoria.dados.alteracoes[p.alteracaoId];
-    a.historico.push({ em: Date.now(), de: "keller", texto: resposta });
-    a.status = "novo";
+    const aprovou = a.aprovador === "keller" && a.status === "em_teste" && respostaDeAprovacao(resposta);
+    a.historico.push({ em: Date.now(), de: "keller", texto: aprovou ? "Aprovou o teste (OK)." : resposta });
+    a.status = aprovou ? "aprovado" : "novo";
     a.atualizadoEm = Date.now();
     memoria.salvar("alteracoes");
     // Não repassa direto pro cliente: o Mecânico lê a decisão e conversa com ele.
-    await avisarKeller(`✅ Recebi sua decisão sobre o pedido ${p.alteracaoId}. O time continua daqui e fala com ${p.nome || "o cliente"}.`);
+    if (aprovou) await avisarKeller(`✅ Aprovado! O pedido ${p.alteracaoId} vai para o sistema oficial na próxima rodada do time (em até 1 hora). Te aviso quando estiver no ar.`);
+    else if (a.aprovador === "keller") await avisarKeller(`✅ Anotei para o pedido ${p.alteracaoId}: "${resposta}". O time ajusta no teste e te manda de novo.`);
+    else await avisarKeller(`✅ Recebi sua decisão sobre o pedido ${p.alteracaoId}. O time continua daqui e fala com ${p.nome || "o cliente"}.`);
     return;
   }
   guardarConhecimento(p.pergunta, resposta);
@@ -533,7 +603,8 @@ const AJUDA =
   "• #cliente 14999999999 | Empresa | Sistema → cadastra quem pode pedir alteração\n" +
   "• #cliente remover 14999999999 → tira do cadastro\n" +
   "• #clientes → lista os cadastrados\n" +
-  "• #pedidos → pedidos de alteração em aberto";
+  "• #pedidos → pedidos de alteração em aberto\n" +
+  "• #cancelar ALT-xxx → cancela um pedido de alteração";
 
 // Avisos que o próprio motor manda na conversa do Keller. Se um deles voltar
 // como "mensagem do Keller" (eco depois de reinício/reenvio), não pode virar resposta pro cliente.
@@ -653,14 +724,26 @@ async function comandoDoKeller(m, texto) {
         return avisarKeller(`🛠️ Cadastrado: ${n} (${cliente}) pode pedir alterações no ${sistema}. O time cuida e só te chama no que não resolver.`);
       }
       case "clientes": {
-        const lista = Object.entries(memoria.dados.sistemas).map(([n, c]) => `• ${n} — ${c.cliente} (${c.sistema})`);
+        const lista = Object.entries(memoria.dados.sistemas).map(([n, c]) => `• ${n} — ${c.cliente} (${c.sistema})${c.modo === "keller" ? " · você aprova, o motor não responde" : ""}`);
         return avisarKeller(lista.length ? `🛠️ Clientes de sistema:\n${lista.join("\n")}` : "🛠️ Nenhum cliente de sistema cadastrado ainda.");
+      }
+      case "cancelar": {
+        const id = arg.trim().toUpperCase();
+        const a = memoria.dados.alteracoes[id];
+        if (!a) return avisarKeller("Não achei esse pedido. Mande #pedidos pra ver os abertos.");
+        a.status = "cancelado";
+        a.historico.push({ em: Date.now(), de: "keller", texto: "Cancelou o pedido." });
+        a.atualizadoEm = Date.now();
+        memoria.salvar("alteracoes");
+        for (const c of Object.keys(pend)) if (pend[c].alteracaoId === id) delete pend[c];
+        memoria.salvar("pendencias");
+        return avisarKeller(`🗑️ Pedido ${id} cancelado. Nada foi mudado no sistema oficial.`);
       }
       case "pedidos": {
         const nomes = { novo: "na fila", em_andamento: "sendo feito", em_teste: "esperando o cliente aprovar", aprovado: "aprovado, vai pro ar", escalado: "esperando você" };
         const abertos = Object.entries(memoria.dados.alteracoes)
           .filter(([, a]) => nomes[a.status])
-          .map(([id, a]) => `• ${id} ${a.cliente}: ${a.pedido} — ${nomes[a.status]}`);
+          .map(([id, a]) => `• ${id} ${a.cliente}: ${a.pedido} — ${a.aprovador === "keller" && a.status === "em_teste" ? "esperando o SEU OK" : nomes[a.status]}`);
         return avisarKeller(abertos.length ? `🛠️ Pedidos de alteração em aberto:\n${abertos.join("\n")}` : "🛠️ Nenhum pedido de alteração em aberto.");
       }
       case "desligar":
@@ -725,6 +808,11 @@ async function tratarMensagem(m, type) {
     }
     // Keller digitou numa conversa de cliente
     if (!memoria) return;
+    if (clienteSilencioso(jid, m)) {
+      // Cliente no modo "Keller aprova": só guarda a fala do Keller como contexto.
+      if (texto) anotarSilencioso(jid, "keller", texto, "", null);
+      return;
+    }
     const f = filaCliente.get(jid);
     if (f) {
       clearTimeout(f.timer);
@@ -739,6 +827,19 @@ async function tratarMensagem(m, type) {
   }
 
   // Mensagem de cliente
+  // Cliente no modo "Keller aprova": o motor nunca responde; só lê e anota pedido de sistema.
+  if (memoria && type === "notify" && !naMinhaConversa && clienteSilencioso(jid, m)) {
+    let texto = textoDa(m);
+    if (!texto && c.audioMessage && atendente) {
+      const transcrito = await textoDeAudio(m);
+      if (transcrito) texto = `(áudio) ${transcrito}`;
+    }
+    if (!texto && c.imageMessage) texto = "(mandou uma foto)";
+    if (!texto) return;
+    console.log(`👂 ${m.pushName || jid} (só lendo): ${texto}`);
+    anotarSilencioso(jid, "cliente", texto, m.pushName || "", m);
+    return;
+  }
   // Atendente de IA DESLIGADO por decisão do Keller (nov/2026): não responde ninguém.
   // Pra religar no futuro, crie no Render a variável ATENDENTE_LIGADO=sim.
   // Exceção: clientes de sistema (cadastrados com #cliente) continuam atendidos, pra
@@ -924,7 +1025,7 @@ app.get("/time/clientes", (req, res) => {
 app.post("/time/clientes", (req, res) => {
   if (!chaveDoTimeOk(req)) return res.status(401).json({ erro: "Chave do time inválida." });
   if (!memoria) return res.status(503).json({ erro: "Motor ainda iniciando." });
-  const { numero, cliente, sistema, obs, remover } = req.body || {};
+  const { numero, cliente, sistema, obs, remover, modo } = req.body || {};
   let n = String(numero || "").replace(/\D/g, "");
   if (n.length >= 10 && n.length <= 11) n = "55" + n;
   if (n.length < 12) return res.status(400).json({ erro: "Número inválido (use DDD + número)." });
@@ -932,7 +1033,7 @@ app.post("/time/clientes", (req, res) => {
   if (remover) delete memoria.dados.sistemas[n];
   else {
     if (!cliente || !sistema) return res.status(400).json({ erro: "Informe cliente e sistema." });
-    memoria.dados.sistemas[n] = { cliente: String(cliente), sistema: String(sistema), ...(obs ? { obs: String(obs) } : {}) };
+    memoria.dados.sistemas[n] = { cliente: String(cliente), sistema: String(sistema), ...(obs ? { obs: String(obs) } : {}), ...(modo === "keller" ? { modo: "keller" } : {}) };
   }
   memoria.salvar("sistemas");
   res.json({ ok: true, clientes: memoria.dados.sistemas });
@@ -944,9 +1045,11 @@ app.post("/time/alteracoes/:id", async (req, res) => {
   const id = req.params.id;
   const a = memoria.dados.alteracoes[id];
   if (!a) return res.status(404).json({ erro: "Pedido não encontrado." });
-  const { status, linkTeste, nota, mensagemCliente, escalarKeller } = req.body || {};
+  const { status, linkTeste, nota, mensagemCliente, escalarKeller, mensagemKeller } = req.body || {};
   if (status && !STATUS_VALIDOS.includes(status)) return res.status(400).json({ erro: `Status inválido. Use: ${STATUS_VALIDOS.join(", ")}` });
-  if ((mensagemCliente || escalarKeller) && (statusConexao !== "conectado" || !sock))
+  if (mensagemCliente && a.aprovador === "keller")
+    return res.status(400).json({ erro: "Esse cliente é do modo 'Keller aprova': não mande mensagemCliente; use mensagemKeller." });
+  if ((mensagemCliente || escalarKeller || mensagemKeller) && (statusConexao !== "conectado" || !sock))
     return res.status(503).json({ erro: "WhatsApp não está conectado agora; tente de novo depois." });
 
   const agora = Date.now();
@@ -959,6 +1062,12 @@ app.post("/time/alteracoes/:id", async (req, res) => {
     if (escalarKeller) {
       await criarPendencia(a.jid, a.nome, `[Pedido ${id} — ${a.cliente} / ${a.sistema}] ${escalarKeller}`, id);
       a.historico.push({ em: agora, de: "time→keller", texto: String(escalarKeller) });
+    }
+    if (mensagemKeller) {
+      // Teste pronto → vira pedido de aprovação (Keller responde OK). Senão, só um aviso.
+      if ((status || a.status) === "em_teste") await criarPendencia(a.jid, a.nome, String(mensagemKeller), id, "aprovar");
+      else await avisarKeller(String(mensagemKeller));
+      a.historico.push({ em: agora, de: "time→keller", texto: String(mensagemKeller) });
     }
     if (nota) a.historico.push({ em: agora, de: "time", texto: String(nota) });
     if (linkTeste !== undefined) a.linkTeste = String(linkTeste);

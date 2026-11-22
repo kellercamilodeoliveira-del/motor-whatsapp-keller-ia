@@ -443,7 +443,44 @@ function criarAtendente({ groq, empresa, memoria, cofre = null, fsdb = null }) {
     throw ultimoErro || new Error("Não consegui transcrever o áudio.");
   }
 
-  return { responder, redigirResposta, anotarFalaDoKeller, anotarFalaDoTime, transcrever };
+  // Modo "Keller aprova": o motor NÃO conversa com o cliente; só lê a conversa
+  // (cliente + Keller) e diz se tem pedido de mudança nos sistemas dele.
+  // Devolve o texto do pedido (claro e completo) ou null.
+  async function detectarPedidoSistema(cs, linhas, novas) {
+    const conversa = linhas
+      .map((l, i) => `${i >= linhas.length - novas ? "[NOVA] " : ""}${l.de === "keller" ? "Keller" : "Cliente"}: ${l.texto}`)
+      .join("\n");
+    const bruto = await chat(
+      [
+        {
+          role: "system",
+          content:
+            `Você lê a conversa de WhatsApp entre o Keller (que cria sistemas) e um cliente dele: ${cs.cliente}. ` +
+            `O cliente usa estes sistemas do Keller: ${cs.sistema}.${cs.obs ? " " + cs.obs : ""}\n` +
+            "Sua única tarefa: dizer se as mensagens marcadas [NOVA] do cliente pedem uma MUDANÇA nesses sistemas " +
+            "(incluir, tirar ou trocar campo, botão, texto, tela, relatório, impressão, regra; ou um ERRO/problema no sistema que precisa ser corrigido).\n" +
+            "NÃO é pedido: conversa normal, bom dia, dúvida de como usar, assunto do caminhão/oficina, preço, pagamento, agendamento, peças, " +
+            "elogio, ou algo que o Keller já recusou na conversa.\n" +
+            "Se for pedido, escreva o pedido completo e claro em português, juntando os detalhes que o cliente deu (e o que o Keller combinou com ele), " +
+            "para um programador entender sem ler a conversa. Não invente detalhes.\n" +
+            'Responda SÓ com JSON, sem mais nada: {"pedido": "..."} ou {"pedido": null}',
+        },
+        { role: "user", content: conversa },
+      ],
+      { temperatura: 0.1, maxTokens: 400 }
+    );
+    const m = String(bruto || "").match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    try {
+      const j = JSON.parse(m[0]);
+      const p = typeof j.pedido === "string" ? j.pedido.trim() : "";
+      return p.length >= 8 ? p.slice(0, 1500) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return { responder, redigirResposta, anotarFalaDoKeller, anotarFalaDoTime, transcrever, detectarPedidoSistema };
 }
 
 module.exports = { criarAtendente, extrairMarcas };
